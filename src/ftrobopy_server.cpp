@@ -49,18 +49,18 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.8.6"
+#define VERSION "0.8.7"
 
 /*
 __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.8.6"
+__version__     = "0.8.7"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "alpha"
-__date__        = "03/21/2022"
+__date__        = "03/22/2022"
 */
 
 namespace kn = kissnet;
@@ -833,8 +833,6 @@ int main(int argc, char* argv[]) {
   for (int k=0; k<num_txts; k++) {
     for (int i=0; i<4; i++) {
       txt_conf[k].motor[i]        = txt_conf[k].previous_motor[i] = 1; // motor M
-      //if (txt_conf[k].out[2*i]   != NULL) delete txt_conf[k].out[2*i];
-      //if (txt_conf[k].out[2*i*1] != NULL) delete txt_conf[k].out[2*i*1];
       txt_conf[k].out[2*i]        = std::make_shared<ft::Encoder>(txt,i+1);
       std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->startDistance(0);
       std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->startSpeed(0);
@@ -843,15 +841,14 @@ int main(int argc, char* argv[]) {
     for (int i=0; i<8; i++) {
       txt_conf[k].input_type[i]   = txt_conf[k].previous_input_type[i] = 1; // switch
       txt_conf[k].input_mode[i]   = txt_conf[k].previous_input_mode[i] = 1; // digital
-      //if (txt_conf[k].in[i]      != NULL) delete txt_conf[k].in[i];
       txt_conf[k].in[i]           = std::make_shared<ft::Switch>(txt, i+1);
     }
     for (int i=0; i<4; i++) {
-      //if (txt_conf[k].counter[i] != NULL) delete txt_conf[k].counter[i];
       txt_conf[k].counter[i]      = std::make_shared<ft::Counter>(txt, i+1);
       txt_conf[k].counter[i]->reset();
     }
   }
+  
   txt.update_config();
 
   connected = true;
@@ -907,14 +904,17 @@ int main(int argc, char* argv[]) {
           // "<Ihh B B 2s BBBB BB2s BB2s BB2s BB2s BB2s BB2s BB2s BB2s B3s B3s B3s B3s 16h"
           int txt_nr = (int16_t)recvbuf[6];
           txt_conf[txt_nr].config_id = (int16_t)recvbuf[4];
+          //cout << "got update_config for txt nr. " << txt_nr << endl;
           if (txt_nr < num_txts) {
             // cout << "Txt[" << txt_nr << "]Configuration ConfigID=" << std::dec << (int)txt_conf[txt_nr].config_id << endl;
             for (int i=0; i<4; i++) {
               txt_conf[txt_nr].motor[i] = (uint8_t)recvbuf[12+i];
               //cout << "Txt[" << txt_nr << "]Configuration Motor[" << i << "]=" << (int)txt_conf[txt_nr].motor[i] << endl; 
               if (txt_conf[txt_nr].motor[i] != txt_conf[txt_nr].previous_motor[i]) {
-                if (txt_conf[txt_nr].previous_motor[i] == 1) {
+                if (txt_conf[txt_nr].previous_motor[i] != 0) {
                   //delete txt_conf[txt_nr].out[i*2];
+                  txt_conf[txt_nr].out[i*2].reset();
+                  txt_conf[txt_nr].out[i*2+1].reset();
                   txt_conf[txt_nr].out[i*2] = std::make_shared<ft::Lamp>(txt, i*2+1 );
                   txt_conf[txt_nr].out[i*2+1] = std::make_shared<ft::Lamp>(txt, i*2+1+1);
                   std::static_pointer_cast<ft::Lamp>(txt_conf[txt_nr].out[i*2])->setBrightness(0);
@@ -922,6 +922,8 @@ int main(int argc, char* argv[]) {
                 } else {
                   //delete txt_conf[txt_nr].out[i*2];
                   //delete txt_conf[txt_nr].out[i*2+1];
+                  txt_conf[txt_nr].out[i*2].reset();
+                  txt_conf[txt_nr].out[i*2+1].reset();
                   txt_conf[txt_nr].out[i*2] = std::make_shared<ft::Encoder>(txt, i*2+1);
                   std::static_pointer_cast<ft::Encoder>(txt_conf[txt_nr].out[i*2])->startDistance(0);
                   std::static_pointer_cast<ft::Encoder>(txt_conf[txt_nr].out[i*2])->startSpeed(0);
@@ -942,29 +944,38 @@ int main(int argc, char* argv[]) {
                 if (txt_conf[txt_nr].input_mode[i] != 0) {  // digital input
                   switch (txt_conf[txt_nr].input_type[i]) {
                     case 0:
+                      txt_conf[txt_nr].in[i].reset();
                       txt_conf[txt_nr].in[i] = std::make_shared<ft::TrailFollower>(txt, i+1); 
                       break;
                     case 1:
+                      txt_conf[txt_nr].in[i].reset();
                       txt_conf[txt_nr].in[i] = std::make_shared<ft::Switch>(txt, i+1); 
                       break;
                     default:
                       cout << "error: unknown digital input type " << txt_conf[txt_nr].input_type[i] << endl;
+                      txt_conf[txt_nr].in[i].reset();
                       txt_conf[txt_nr].in[i] = std::make_shared<ft::Switch>(txt, i+1); 
                     break;
                   }
                 } else { // analog input
                   switch (txt_conf[txt_nr].input_type[i]) {
                     case 0:
+                      txt_conf[txt_nr].in[i].reset();
                       txt_conf[txt_nr].in[i] = std::make_shared<ft::Voltmeter>(txt, i+1);
                       break;
                     case 1:
+                      txt_conf[txt_nr].in[i].reset();
                       txt_conf[txt_nr].in[i] = std::make_shared<ft::Resistor>(txt, i+1);
                       break;
                     case 3:
+                      txt_conf[txt_nr].in[i].reset();
                       txt_conf[txt_nr].in[i] = std::make_shared<ft::Ultrasonic>(txt, i+1);
+                      txt.update_config();
+                      //cout << "txt_conf[" << txt_nr << "].in[" << i << "] = Ultrasonic" << endl;
                       break;
                     default:
                       cout << "error: unknown digital input type " << txt_conf[txt_nr].input_type[i] << endl;
+                      txt_conf[txt_nr].in[i].reset();
                       txt_conf[txt_nr].in[i] = std::make_shared<ft::Voltmeter>(txt, i+1); 
                     break;
                   }
@@ -973,6 +984,7 @@ int main(int argc, char* argv[]) {
                 txt_conf[txt_nr].previous_input_mode[i] = txt_conf[txt_nr].input_mode[i];
               }
             }
+            txt.update_config();
           }
           break;
         }
@@ -990,7 +1002,40 @@ int main(int argc, char* argv[]) {
           /////////////////////////////
 
           simple_sendbuf.txt.m_resp_id = m_resp_id;
-          for (int i=0; i<8; i++) simple_sendbuf.txt.input[i] = txt_conf[0].in[i]->getState();
+          for (int i=0; i<8; i++) {
+
+                if (txt_conf[0].input_mode[i] != 0) {  // digital input
+                  switch (txt_conf[0].input_type[i]) {
+                    case 0:
+                      simple_sendbuf.txt.input[i] = txt_conf[0].in[i]->getState(); // ft::Trailfollower
+                      break;
+                    case 1:
+                      simple_sendbuf.txt.input[i] = txt_conf[0].in[i]->getState(); // ft::Switch
+                      break;
+                    default:
+                      simple_sendbuf.txt.input[i] = txt_conf[0].in[i]->getState(); // ft::InputDevice
+                    break;
+                  }
+                } else { // analog input
+                  switch (txt_conf[0].input_type[i]) {
+                    case 0:
+                      simple_sendbuf.txt.input[i] = std::static_pointer_cast<ft::Voltmeter>(txt_conf[0].in[i])->getVoltage(); // ft::Voltmeter
+                      break;
+                    case 1:
+                      simple_sendbuf.txt.input[i] = std::static_pointer_cast<ft::Resistor>(txt_conf[0].in[i])->getResistance(); // ft::Resistor
+                      break;
+                    case 3:
+                      simple_sendbuf.txt.input[i] = std::static_pointer_cast<ft::Ultrasonic>(txt_conf[0].in[i])->getDistance(); // ft::Ultrasonic
+                      break;
+                    default:
+                      simple_sendbuf.txt.input[i] = txt_conf[0].in[i]->getState(); // ft::InputDevice
+                    break;
+                  }
+                }
+
+
+          }
+
           for (int i=0; i<4; i++) simple_sendbuf.txt.counter_value[i] = txt_conf[0].counter[i]->getDistance();
           for (int i=0; i<4; i++) simple_sendbuf.txt.counter[i] = txt_conf[0].counter[i]->getState();
           for (int i=0; i<4; i++) simple_sendbuf.txt.counter_cmd_id[i] = txt_conf[0].counter_cmd_id[i];
@@ -1044,7 +1089,6 @@ int main(int argc, char* argv[]) {
               previous_simple_recvbuf.txt.motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
               txt_conf[0].running_motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
               std::static_pointer_cast<ft::Counter>(txt_conf[0].counter[i])->reset();
-              //simple_sendbuf.txt.counter_cmd_id[i] = simple_recvbuf.txt.counter_cmd_id[i];
               if (simple_recvbuf.txt.motor_sync[i] == 0) {
                 std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->
                             startDistance(simple_recvbuf.txt.motor_dist[i], 0);
@@ -1061,11 +1105,9 @@ int main(int argc, char* argv[]) {
             if (simple_recvbuf.txt.counter_cmd_id[i] > previous_simple_recvbuf.txt.counter_cmd_id[i]) {
               previous_simple_recvbuf.txt.counter_cmd_id[i] = simple_recvbuf.txt.counter_cmd_id[i];
               std::static_pointer_cast<ft::Counter>(txt_conf[0].counter[i])->reset();
-              //simple_sendbuf.txt.counter_cmd_id[i] = simple_recvbuf.txt.counter_cmd_id[i];
               txt_conf[0].counter_cmd_id[i] = simple_recvbuf.txt.counter_cmd_id[i];
             }
           }
-
           break;
         }        
         case  0xFBC56F98: {
@@ -1092,7 +1134,44 @@ int main(int argc, char* argv[]) {
           for (int k=0; k<num_txts; k++) {
             for (int i=0; i<8; i++) {
               //cout << "txt_conf ptr = " << txt_conf[0].in[i]->getConn() << endl;
-              uncbuf[k].txt.input[i] = txt_conf[k].in[i]->getState();
+              //uncbuf[k].txt.input[i] = txt_conf[k].in[i]->getState();
+
+                if (txt_conf[k].input_mode[i] != 0) {  // digital input
+                  switch (txt_conf[k].input_type[i]) {
+                    case 0:
+                      uncbuf[k].txt.input[i] = txt_conf[k].in[i]->getState(); // ft::Trailfollower
+                      //cout << "Input I" << i << " is Trailfollower (digital) = " << uncbuf[k].txt.input[i] << endl;
+                      break;
+                    case 1:
+                      uncbuf[k].txt.input[i] = txt_conf[k].in[i]->getState(); // ft::Switch
+                      //cout << "Input I" << i << " is Switch (digital) = " << uncbuf[k].txt.input[i] << endl;
+                      break;
+                    default:
+                      uncbuf[k].txt.input[i] = txt_conf[k].in[i]->getState(); // ft::InputDevice
+                      //cout << "Input I" << i << " is default InputDevice (digital) = " << uncbuf[k].txt.input[i] << endl;
+                    break;
+                  }
+                } else { // analog input
+                  switch (txt_conf[k].input_type[i]) {
+                    case 0:
+                      uncbuf[k].txt.input[i] = std::static_pointer_cast<ft::Voltmeter>(txt_conf[k].in[i])->getVoltage(); // ft::Voltmeter
+                      //cout << "Input I" << i << " is Voltmeter (analog) = " << uncbuf[k].txt.input[i] << endl;
+                      break;
+                    case 1:
+                      uncbuf[k].txt.input[i] = std::static_pointer_cast<ft::Resistor>(txt_conf[k].in[i])->getResistance(); // ft::Resistor
+                      //cout << "Input I" << i << " is Resistor (analog) = " << uncbuf[k].txt.input[i] << endl;
+                      break;
+                    case 3:
+                      uncbuf[k].txt.input[i] = std::static_pointer_cast<ft::Ultrasonic>(txt_conf[k].in[i])->getDistance(); // ft::Ultrasonic
+                      //cout << "Input I" << i << " is Ultrasonic (analog) = " << uncbuf[k].txt.input[i] << endl;
+                      break;
+                    default:
+                      uncbuf[k].txt.input[i] = txt_conf[k].in[i]->getState(); // ft::InputDevice
+                      //cout << "Input I" << i << " is default InputDevice (analog) = " << uncbuf[k].txt.input[i] << endl;
+                    break;
+                  }
+                }
+
               if (uncbuf[k].txt.input[i] != previous_uncbuf[k].txt.input[i]) {
                 TransferDataChanged = true;
               }
@@ -1121,7 +1200,6 @@ int main(int argc, char* argv[]) {
             }
 
           }
-
           if (TransferDataChanged) {
             send_compbuf.Reset();
             for (int k=0; k<num_txts; k++) {
@@ -1244,7 +1322,6 @@ int main(int argc, char* argv[]) {
             }
 
           }
-
           break;
         }
         case 0x882A40A6: { // startCameraOnline
@@ -1270,13 +1347,6 @@ int main(int argc, char* argv[]) {
           camera_is_online = false;
           break;
         }   
-/*
-        // This has to happen in different thread on port 65001    
-        case 0xBDC2D7A1: { // getCameraFrame
-          camGetFrame(1);
-          break;
-        }       
-*/
         case 0xACAB31F7: { // "Stop all running programs" pressed in ROBOPro
           cout << "got: ACAB31F7 (stop all running programs pressed in ROBOPro)" << endl;
           m_resp_id  = 0x0; // 0x15B1758E;
