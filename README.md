@@ -1,7 +1,7 @@
 # ftrobopy_server
-ftrobopy / ROBOPro server for the fischertechnik TXT 4.0 controller
+ftrobopy / ROBOPro / ftScratchTXT server for the fischertechnik TXT 4.0 controller
 
-With the ftrobopy_server app the fischertechnik TXT 4.0 can be controlled in online mode either with ftrobopy or with ROBOPro.
+With the ftrobopy_server app the fischertechnik TXT 4.0 can be controlled in online mode with ftrobopy, ROBOPro or ftScratchTXT/ftscratch3.
 
 Currently supported functions are:
 
