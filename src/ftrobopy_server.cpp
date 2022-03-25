@@ -49,18 +49,18 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.8.7"
+#define VERSION "0.8.8"
 
 /*
 __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.8.7"
+__version__     = "0.8.8"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "alpha"
-__date__        = "03/22/2022"
+__date__        = "03/25/2022"
 */
 
 namespace kn = kissnet;
@@ -69,7 +69,8 @@ using std::endl;
 using namespace std::chrono_literals;
 using std::this_thread::sleep_for;
 
-const std::string m_devicename = "ftrobopy_server";
+// const std::string m_devicename = "ftrobopy_server";
+const std::string m_devicename = "TX2013";
 const std::string ftrobopy_server_version = VERSION;
 
 const unsigned m_version = 0x4070000;   // ROBOPro-Version 4.7.0
@@ -757,6 +758,7 @@ int main(int argc, char* argv[]) {
   uint32_t previous_recv_crc0 = recv_crc0;
 
   unsigned m_id;
+  unsigned previous_m_id;
   unsigned m_resp_id;
   bool TransferDataChanged = false;
 
@@ -850,16 +852,18 @@ int main(int argc, char* argv[]) {
   }
   
   txt.update_config();
-
+  m_id = 0;
+  previous_m_id = 0;
   connected = true;
   while (connected) {    
+      //cout << "waiting ..." << endl;
       auto [size, valid] = sock.recv(recvbuf);
       //cout << std::dec << size << " bytes received: ";
       //for (int k=0; k<size; k++) {
       //  cout << std::hex << (int)recvbuf[k] << " ";
       //}
       //cout << endl;
-
+      previous_m_id = m_id;
       m_id = (uint8_t)recvbuf[0] | (uint8_t)recvbuf[1] << 8 | (uint8_t)recvbuf[2] << 16 | (uint8_t)recvbuf[3] << 24;
       // m_id = (uint32_t)recvbuf[0];
       switch (m_id) {
@@ -867,7 +871,12 @@ int main(int argc, char* argv[]) {
           cout << "got: query status" << endl;
           m_resp_id = 0xBAC9723E;
           auto sendbuf = pystruct::pack(PY_STRING("<I16sI"), m_resp_id, m_devicename, m_version);
-          cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
+          //cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
+          //cout << "sendbuf[0-24] : ";
+          //for (int i=0; i<24; i++) {
+          //  cout << std::hex << (int)sendbuf[i] << " ";
+          //}
+          //cout << endl;
           sock.send(sendbuf, sendbuf.size());
           break;
         }
@@ -875,7 +884,7 @@ int main(int argc, char* argv[]) {
           cout << "got: start online" << endl;
           m_resp_id  = 0xCA689F75;
           auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
-          cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
+          //cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           sock.send(sendbuf, sendbuf.size());
           i2c_is_online = true;
           std::thread i2c_thread(startI2C);
@@ -886,20 +895,22 @@ int main(int argc, char* argv[]) {
           cout << "got: stop online" << endl;
           m_resp_id  = 0xFBF600D2;
           auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
-          cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
+          //cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           sock.send(sendbuf, sendbuf.size());
-          i2c_is_online = false;
-          camera_is_online = false;
-          connected = false;
-          sock.close();
-          txt.reset();
+          if (previous_m_id != 0xDC21219A) { // query status (this is neccessary for ftScratchTXT)
+            i2c_is_online = false;
+            camera_is_online = false;
+            connected = false;
+            sock.close();
+            txt.reset();
+          }
           break;
         }
         case 0x060EF27E: { // update config
-          cout << "got: update config" << endl;
+          //cout << "got: update config" << endl;
           m_resp_id  = 0x9689A68C;
           auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
-          cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
+          //cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           sock.send(sendbuf, sendbuf.size());
           // "<Ihh B B 2s BBBB BB2s BB2s BB2s BB2s BB2s BB2s BB2s BB2s B3s B3s B3s B3s 16h"
           int txt_nr = (int16_t)recvbuf[6];
@@ -1085,7 +1096,7 @@ int main(int argc, char* argv[]) {
             simple_recvbuf.txt.motor_dist[i] = (uint8_t)recvbuf[2*i+28] | (uint8_t)recvbuf[2*i+29]<<8;
             simple_recvbuf.txt.motor_cmd_id[i] = (uint8_t)recvbuf[2*i+36] | (uint8_t)recvbuf[2*i+37]<<8;
             if (simple_recvbuf.txt.motor_cmd_id[i] > previous_simple_recvbuf.txt.motor_cmd_id[i]) {
-              cout << "motor_cmd_id increased in simple_recv" << endl;
+              //cout << "motor_cmd_id increased in simple_recv" << endl;
               previous_simple_recvbuf.txt.motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
               txt_conf[0].running_motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
               std::static_pointer_cast<ft::Counter>(txt_conf[0].counter[i])->reset();
@@ -1250,7 +1261,7 @@ int main(int argc, char* argv[]) {
           /////////////////////////////
           if (recv_crc != previous_recv_crc) {
             previous_recv_crc = recv_crc;
-            cout << "got: new exchange data compressed" << endl;
+            //cout << "got: new exchange data compressed" << endl;
             //cout << "receive buffer extrasize = " << std::dec << recv_m_extrasize << endl;
             //cout << "receive buffer crc = " << std::hex << recv_crc << endl; // 0x40493a53
             //for (int i=0; i<recv_m_extrasize; i++) {
@@ -1271,12 +1282,12 @@ int main(int argc, char* argv[]) {
                   else
                     if (w==1 && z==0) recv_uncbuf[k].raw[i]=1;
                     else recv_uncbuf[k].raw[i]=w;
-                cout << std::hex << recv_uncbuf[k].raw[i] << "(" << w << ") " << std::flush; 
+                //cout << std::hex << recv_uncbuf[k].raw[i] << "(" << w << ") " << std::flush; 
               } 
             }  
             cout << endl;
             if (recv_crc != recv_compbuf.GetCrc()) {
-              cout << "ERROR: received CRC does not match calculated CRC!" << endl;
+              //cout << "ERROR: received CRC does not match calculated CRC!" << endl;
               //cout << "transmitted crc = " << recv_crc <<"  calculated crc = " << recv_compbuf.GetCrc() << endl;
             }
             for (int k=0; k<num_txts; k++) {
