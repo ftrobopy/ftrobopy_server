@@ -56,11 +56,11 @@ __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.8.8"
+__version__     = "0.8.9"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "alpha"
-__date__        = "03/25/2022"
+__date__        = "03/28/2022"
 */
 
 namespace kn = kissnet;
@@ -83,52 +83,86 @@ const unsigned m_version = 0x4070000;   // ROBOPro-Version 4.7.0
 
 #define N_CAPTURE_BUFS 2
 
-struct buffer {
-  void   *start;
-  size_t  length;
-};
-
-static struct buffer *buffers;
-
 bool camera_is_online = false;
 bool i2c_is_online = false;
 
-static int xioctl(int fd, int request, void *arg)
-{
-        int r;
-        do {
-          r = ioctl (fd, request, arg);
-        } while (-1 == r && EINTR == errno);
+class Camera {
+public:
+  int videv;
+  unsigned int bufidx;
+  int format;
+  int width, height, fps;
+  struct buffer {
+    void   *start;
+    size_t  length;
+  };
+  struct buffer *buffers;
 
-        return r;
+  Camera(int width, int height, int fps);
+  Camera(const Camera& other) = delete;
+  Camera& operator=(const Camera& other) = delete;
+  Camera(Camera&& other) noexcept;
+  Camera& operator=(Camera&& other) noexcept;
+  ~Camera();
+  
+  int xioctl(int fd, int request, void *arg);
+  int status(void);
+  std::tuple<char*, int> getFrame(void);
+};
+
+Camera::Camera(Camera&& other) noexcept {
+  videv = other.videv;
+  bufidx = other.bufidx;
+  format = other.format;
+  width = other.width;
+  height = other.height;
+  fps = other.fps;
+  other.videv = -1;
+  buffers = other.buffers;
+  other.buffers = NULL;
 }
 
+Camera& Camera::operator=(Camera&& other) noexcept {
+  if (this != &other) {
+    videv = other.videv;
+    other.videv = -1;
+    buffers = other.buffers;
+    other.buffers = NULL;
+  }
+  return(*this);
+}
 
-int camInit(int width, int height, int fps)
+Camera::~Camera(){
+  enum v4l2_buf_type type;
+  type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  if(xioctl(videv, VIDIOC_STREAMOFF, &type) == -1) {
+    //cout << "error stop streaming in camClose" << endl;
+    //return(0);
+  }
+  if (buffers!=NULL) {
+    for (int i = 0; i < N_CAPTURE_BUFS; i++) {
+      if (munmap(buffers[i].start, buffers[i].length) == -1) {
+        //cout << "error unmapping memory buffers in camClose" << endl;
+        //return(0);
+        break;
+      }
+    }
+    free(buffers);
+  }
+  if (videv != -1) {
+    close(videv);
+  }
+}
+
+Camera::Camera(int width_, int height_, int fps_) :
+  width(width_), height(height_), fps(fps_), videv(-1) 
 {
-  static int camInitialized = 0;
-  static int videv = -1;
-  unsigned int bufidx;
-
-  int format = 0;
-  
-  if (camInitialized == 1) {
-    return(1);
-  }
-  
-  if (format == 0) {
-    format = V4L2_PIX_FMT_MJPEG;
-  } else {
-    format = V4L2_PIX_FMT_YUYV;
-  }
-
+  format = V4L2_PIX_FMT_MJPEG; // alternative: V4L2_PIX_FMT_YUYV
   videv = open("/dev/video0", O_RDWR, 0);
-  
   if (videv == -1) {
     cout << "error open video device" << endl;
-    return(0);
+    //return(0);
   }
-
   struct v4l2_format fmt = {0};
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   fmt.fmt.pix.width = width;
@@ -138,7 +172,7 @@ int camInit(int width, int height, int fps)
 
   if (xioctl(videv, VIDIOC_S_FMT, &fmt)==-1) { 
     cout << "error set pixel format in cam_init" << endl;
-    return(0);
+    //return(0);
   }
 
   struct v4l2_streamparm parm = {0};
@@ -148,7 +182,7 @@ int camInit(int width, int height, int fps)
 
   if (xioctl(videv, VIDIOC_S_PARM, &parm)==-1) { 
     cout << "error set framerate in cam_init" << endl;
-    return(0);
+    //return(0);
   }
  
   struct v4l2_requestbuffers req = {0};
@@ -158,18 +192,18 @@ int camInit(int width, int height, int fps)
 
   if (xioctl(videv, VIDIOC_REQBUFS, &req)==-1) {
     cout << "error request buffer in cam_init" << endl;
-    return(0);
+    //return(0);
   }
 
   if (req.count < N_CAPTURE_BUFS) {
     cout << "error insufficient capture buffer memory in cam_init" << endl;
-    return(0);
+    //return(0);
   }
 
   buffers = (buffer*)calloc(req.count, sizeof(*buffers));
   if (!buffers) {
     cout << "error out of memory in cam_init" << endl;
-    return(0);
+    //return(0);
   }
 
   for (bufidx = 0; bufidx<req.count; bufidx++) {
@@ -179,7 +213,7 @@ int camInit(int width, int height, int fps)
     buf.index = bufidx;
     if(xioctl(videv, VIDIOC_QUERYBUF, &buf)==-1) {
       cout << "error query buffer in cam_init" << endl;
-      return(0);
+      //return(0);
     }
     buffers[bufidx].length = buf.length;
     buffers[bufidx].start = mmap (NULL,
@@ -189,7 +223,7 @@ int camInit(int width, int height, int fps)
                                   videv, buf.m.offset);
     if (buffers[bufidx].start==MAP_FAILED) {
       cout << "error mmap failed in cam_init" << endl;
-      return(0);
+      //return(0);
     }
 
     struct v4l2_buffer buf2 = {0};
@@ -198,7 +232,7 @@ int camInit(int width, int height, int fps)
     buf2.index = bufidx;
     if(xioctl(videv, VIDIOC_QBUF, &buf2)==-1) {
       cout << "error query buffer2 in cam_init" << endl;
-      return(0);
+      //return(0);
     }
   }
 
@@ -206,7 +240,7 @@ int camInit(int width, int height, int fps)
   type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   if(xioctl(videv, VIDIOC_STREAMON, &type)==-1) {
     cout << "error start streaming in cam_init" << endl;
-    return(0);
+    //return(0);
   }
 
   struct v4l2_control control = {0};
@@ -214,21 +248,29 @@ int camInit(int width, int height, int fps)
   control.value = 1; // 0=off 1=50Hz 2=60Hz;
   if(xioctl(videv, VIDIOC_S_CTRL, &control)==-1) {
     cout << "error set power line frequency in cam_init" << endl;
-    return(0);
+    //return(0);
   }
   struct v4l2_control control2 = {0};
   control2.id = V4L2_CID_SHARPNESS;
   control2.value = 0; // switch off sharpness correction of camera
   if(xioctl(videv, VIDIOC_S_CTRL, &control2)==-1) {
     cout << "error set sharpness in cam_init" << endl;
-    return(0);
+    //return(0);
   }
 
   // returns the number of the video device
-  return(videv);
+  //return(videv);  
 }
 
-int camStatus(int videv) {
+int Camera::xioctl(int fd, int request, void *arg) {
+  int r;
+  do {
+    r = ioctl (fd, request, arg);
+  } while (-1 == r && EINTR == errno);
+  return r;
+}
+
+int Camera::status(void) {
   struct v4l2_buffer buf = {0};
   buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   buf.memory = V4L2_MEMORY_MMAP;
@@ -236,34 +278,11 @@ int camStatus(int videv) {
     cout << "error query buffer in camStatus" << endl;
     return(0);
   }
-
   // returns number of frames waiting  
   return(buf.sequence);
 }
 
-int camClose(int videv){
-
-    enum v4l2_buf_type type;
-
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if(xioctl(videv, VIDIOC_STREAMOFF, &type) == -1) {
-      cout << "error stop streaming in camClose" << endl;
-      return(0);
-    }
-
-    for (int i = 0; i < N_CAPTURE_BUFS; i++) {
-      if (munmap(buffers[i].start, buffers[i].length) == -1) {
-        cout << "error unmapping memory buffers in camClose" << endl;
-        return(0);
-      }
-    }
-
-    close(videv);
-  
-    return(1);
-}
-
-std::tuple<char*, int> camGetFrame(int videv) {
+std::tuple<char*, int> Camera::getFrame(void) {
 
   struct v4l2_buffer buf = {0};
   
@@ -322,7 +341,8 @@ std::tuple<char*, int> camGetFrame(int videv) {
 
 void camThread(int width, int height, int framerate) {    
   //cout << std::dec << "width=" << width << " height=" << height << " framerate=" << framerate << endl;
-  int videv = camInit(width, height, framerate);
+  //int videv = camInit(width, height, framerate);
+  Camera cam(width, height, framerate);
   //cout << "videv=" << videv << endl;
   sleep_for(100ms);
   kn::tcp_socket camsocket({ "0.0.0.0", 65001 }); 
@@ -333,8 +353,10 @@ void camThread(int width, int height, int framerate) {
   camsocket.listen();
   camsock=camsocket.accept();
   while (camera_is_online) {
-    if (camStatus(videv)>0) {
-      auto [buf, buflen] = camGetFrame(videv);
+    // if (camStatus(videv)>0) {
+    if (cam.status()>0) {
+      //auto [buf, buflen] = camGetFrame(videv);
+      auto [buf, buflen] = cam.getFrame();
       //cout << "buflen=" << buflen << endl;
       if (buflen > 0) {
         uint32_t cam_m_resp_id = 0xBDC2D7A1;
@@ -369,7 +391,7 @@ void camThread(int width, int height, int framerate) {
     }
     sleep_for(5ms);
   }
-  camClose(videv);
+  //camClose(videv);  automatic due to RAII pattern of Camera class
   camsock.close();
   camsocket.close();
 }
