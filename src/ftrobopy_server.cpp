@@ -49,7 +49,7 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.8.8"
+#define VERSION "0.8.9"
 
 /*
 __author__      = "Torsten Stuehn"
@@ -60,7 +60,7 @@ __version__     = "0.8.9"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "alpha"
-__date__        = "03/28/2022"
+__date__        = "04/16/2022"
 */
 
 namespace kn = kissnet;
@@ -339,25 +339,25 @@ std::tuple<char*, int> Camera::getFrame(void) {
   }
 }
 
-void camThread(int width, int height, int framerate) {    
+void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) {    
   //cout << std::dec << "width=" << width << " height=" << height << " framerate=" << framerate << endl;
   //int videv = camInit(width, height, framerate);
   Camera cam(width, height, framerate);
   //cout << "videv=" << videv << endl;
   sleep_for(100ms);
-  kn::tcp_socket camsocket({ "0.0.0.0", 65001 }); 
-  kn::socket<(kn::protocol)0> camsock;        
+  //kn::port_t camport = 65001;
+  //kn::tcp_socket camsocket({ "0.0.0.0", camport }); 
+  //kn::socket<(kn::protocol)0> camsock;        
   kn::buffer<1024> cambuf;
-  kn::port_t camport = 65001;
-  camsocket.bind();
-  camsocket.listen();
-  camsock=camsocket.accept();
+  //camsocket.bind();
+  //camsocket.listen();
+  
+  cout << "camera socket opened ... waiting for connection on port 65001" << endl;
+  auto camsock=camsocket->accept();
+  cout << "camera connection established" << endl;
   while (camera_is_online) {
-    // if (camStatus(videv)>0) {
     if (cam.status()>0) {
-      //auto [buf, buflen] = camGetFrame(videv);
       auto [buf, buflen] = cam.getFrame();
-      //cout << "buflen=" << buflen << endl;
       if (buflen > 0) {
         uint32_t cam_m_resp_id = 0xBDC2D7A1;
         int framesizecompressed = buflen;
@@ -377,7 +377,6 @@ void camThread(int width, int height, int framerate) {
             camsock.send(bufc, bufcount);
             bufcount = 0;
           }
-          //cout << "bufcount: " << bufcount << endl; 
         }
         auto [size, valid] = camsock.recv(cambuf);
         uint32_t cam_m_id = (uint8_t)cambuf[0] | (uint8_t)cambuf[1] << 8 | (uint8_t)cambuf[2] << 16 | (uint8_t)cambuf[3] << 24;
@@ -391,23 +390,21 @@ void camThread(int width, int height, int framerate) {
     }
     sleep_for(5ms);
   }
+  cout << "camera socket closed" << endl;
   //camClose(videv);  automatic due to RAII pattern of Camera class
-  camsock.close();
-  camsocket.close();
+  //camsock.close();
+  //camsocket.close();
 }
 
-void startI2C() {
-  kn::tcp_socket i2c_socket({ "0.0.0.0", 65002 }); 
-  kn::buffer<1024> recvbuf;
-  i2c_socket.bind();
-  i2c_socket.listen();
-  auto i2csock = i2c_socket.accept();
-  //cout << "I2C socket opened ..." << endl;
+void startI2C(kn::tcp_socket* i2c_socket) {
+  cout << "I2C socket opened ... waiting for connection on port 65002" << endl;
+  auto i2csock = i2c_socket->accept();
+  cout << "I2C connection established ... (i2c functionality not yet implemented)" << endl;
   while (i2c_is_online) {
     sleep_for(1000ms);
   }
-  i2csock.close();
-  i2c_socket.close();
+  cout << "I2C socket closed" << endl;
+  //i2csock.close();
 };
 
 class TxtConfiguration {
@@ -741,14 +738,6 @@ void CompBuffer::Finish() {
   }
 }
 
-kn::tcp_socket listen_socket({ "0.0.0.0", 65000 }); 
-kn::socket<(kn::protocol)0> sock;
-// to get compiler decuced type of auto var
-// template<typename T> struct TD;
-// TD<decltype(var)> td;
-
-ft::TXT txt("auto");
-
 int main(int argc, char* argv[]) {
 
   cout << "ftrobopy and ROBOPro Online Server, version " << ftrobopy_server_version 
@@ -797,14 +786,13 @@ int main(int argc, char* argv[]) {
 		cout << "Got sigint signal... closing socket" << endl; 
     camera_is_online = false;
     i2c_is_online = false;
-    sock.close();
-    listen_socket.close();
-    txt.reset();
+    //sock.close();
+    //listen_socket.close();
+    //txt.reset();
     sleep_for(100ms);
 		std::exit(0);
 	});
-
-
+  
   std::signal(SIGPIPE, SIG_IGN);
 
   //catch the SIGPIPE signal (else the program will exit)
@@ -824,9 +812,23 @@ int main(int argc, char* argv[]) {
 	});
   run_th.detach();  
 
+  kn::tcp_socket listen_socket({ "0.0.0.0", 65000 }); 
+  kn::tcp_socket camsocket({ "0.0.0.0", 65001 }); 
+  kn::tcp_socket i2c_socket({ "0.0.0.0", 65002 }); 
   listen_socket.bind();
   listen_socket.listen();
-  
+  camsocket.bind();
+  camsocket.listen();
+  i2c_socket.bind();
+  i2c_socket.listen();
+
+  //kn::socket<(kn::protocol)0> sock;
+  // to get compiler deduced type of auto var
+  // template<typename T> struct TD;
+  // TD<decltype(var)> td;
+
+  ft::TXT txt("auto");
+
   while(true) {
 
   crc0 = 0x0bbf0714;
@@ -848,10 +850,6 @@ int main(int argc, char* argv[]) {
   std::memset(&simple_sendbuf, 0, sizeof simple_sendbuf);
   std::memset(&simple_recvbuf, 0, sizeof simple_recvbuf);
 
-  sock=listen_socket.accept();
-
-  cout << "socket connection to client established ..." << endl;
- 
   int num_txts = 1; // 1 + txt.getSlavesNumber(); ?
 
   for (int k=0; k<num_txts; k++) {
@@ -872,22 +870,33 @@ int main(int argc, char* argv[]) {
       txt_conf[k].counter[i]->reset();
     }
   }
-  
   txt.update_config();
+
+  cout << "waiting for a client to connect ..." << endl;
+  auto sock = listen_socket.accept();
+  cout << "accepted, connection to client established ..." << endl;
+ 
   m_id = 0;
   previous_m_id = 0;
   connected = true;
   while (connected) {    
-      //cout << "waiting ..." << endl;
       auto [size, valid] = sock.recv(recvbuf);
       //cout << std::dec << size << " bytes received: ";
       //for (int k=0; k<size; k++) {
       //  cout << std::hex << (int)recvbuf[k] << " ";
       //}
       //cout << endl;
+
+      if (!valid) {
+        i2c_is_online = false;
+        camera_is_online = false;
+        connected = false;
+        cout << "connection to client lost!" << endl;
+        continue;
+      }
+
       previous_m_id = m_id;
       m_id = (uint8_t)recvbuf[0] | (uint8_t)recvbuf[1] << 8 | (uint8_t)recvbuf[2] << 16 | (uint8_t)recvbuf[3] << 24;
-      // m_id = (uint32_t)recvbuf[0];
       switch (m_id) {
         case 0xDC21219A: { // query status
           cout << "got: query status" << endl;
@@ -906,10 +915,10 @@ int main(int argc, char* argv[]) {
           cout << "got: start online" << endl;
           m_resp_id  = 0xCA689F75;
           auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
-          //cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           sock.send(sendbuf, sendbuf.size());
+          //cout << "  --> sent back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           i2c_is_online = true;
-          std::thread i2c_thread(startI2C);
+          std::thread i2c_thread(startI2C, &i2c_socket);
           i2c_thread.detach();
           break;
         }
@@ -917,23 +926,22 @@ int main(int argc, char* argv[]) {
           cout << "got: stop online" << endl;
           m_resp_id  = 0xFBF600D2;
           auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
-          //cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           sock.send(sendbuf, sendbuf.size());
-          if (previous_m_id != 0xDC21219A) { // query status (this is neccessary for ftScratchTXT)
+          if (previous_m_id != 0xDC21219A) { // ftScratchTXT sends "stop online" immediately after "query status", catch this case here
             i2c_is_online = false;
             camera_is_online = false;
             connected = false;
-            sock.close();
-            txt.reset();
+            //sock.close();
+            //txt.reset();
           }
           break;
         }
         case 0x060EF27E: { // update config
-          //cout << "got: update config" << endl;
+          cout << "got: update config" << endl;
           m_resp_id  = 0x9689A68C;
           auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
-          //cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           sock.send(sendbuf, sendbuf.size());
+
           // "<Ihh B B 2s BBBB BB2s BB2s BB2s BB2s BB2s BB2s BB2s BB2s B3s B3s B3s B3s 16h"
           int txt_nr = (int16_t)recvbuf[6];
           txt_conf[txt_nr].config_id = (int16_t)recvbuf[4];
@@ -1022,7 +1030,7 @@ int main(int argc, char* argv[]) {
           break;
         }
         case 0xCC3597BA: {
-          //cout << "got: exchange data simple" << endl;
+          cout << "got: exchange data simple" << endl;
           m_resp_id = 0x4EEFAC41;
           //cout << "recvbuf[0-60] : ";
           //for (int i=0; i<60; i++) {
@@ -1159,7 +1167,6 @@ int main(int argc, char* argv[]) {
           recv_crc = (uint8_t)recvbuf[8] | (uint8_t)recvbuf[9] << 8 | (uint8_t)recvbuf[10] << 16 | (uint8_t)recvbuf[11] << 24;
           //cout << "receive buffer crc = " << recv_crc << endl; // 0x40493a53
           
-
           /////////////////////////////
           // prepare send buffer
           /////////////////////////////
@@ -1361,12 +1368,11 @@ int main(int argc, char* argv[]) {
           cout << "got: startCameraOnline" << endl;
           m_resp_id  = 0xCF41B24E;
           auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
-          cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           sock.send(sendbuf, sendbuf.size());
           auto [dummy_m_id, width, height, framerate, powerlinefreq] = pystruct::unpack(PY_STRING("<I4i"), recvbuf);
           if (!camera_is_online) {
             camera_is_online = true;
-            std::thread camthread(camThread, width, height, framerate);
+            std::thread camthread(camThread, &camsocket, width, height, framerate);
             camthread.detach();
           }
           break;
@@ -1375,22 +1381,21 @@ int main(int argc, char* argv[]) {
           cout << "got: stopCameraOnline" << endl;
           m_resp_id  = 0x4B3C1EB6;
           auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
-          cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           sock.send(sendbuf, sendbuf.size());
           camera_is_online = false;
           break;
         }   
         case 0xACAB31F7: { // "Stop all running programs" pressed in ROBOPro
-          cout << "got: ACAB31F7 (stop all running programs pressed in ROBOPro)" << endl;
-          m_resp_id  = 0x0; // 0x15B1758E;
+          cout << "got: ACAB31F7 (stop all running programs button pressed in ROBOPro)" << endl;
+          m_resp_id  = 0x15B1758E;
           auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
-          cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
+          // cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           sock.send(sendbuf, sendbuf.size());
           connected = false;
           camera_is_online = false;
           i2c_is_online = false;
-          sock.close();
-          txt.reset();
+          //sock.close();
+          //txt.reset();
           break;
         }
         case 0xDAF84364: { // Upload Program to TXT
@@ -1398,11 +1403,14 @@ int main(int argc, char* argv[]) {
           m_resp_id  = 0x5170C53B; // +sendbuf (Speicherlayout) = 00 60 7d b6 00 00 40 00 48 d9 6b b6 00 24 00 00
           // ("kein Speicherlayout erhalten!"-Fehler in ROBOPro, wenn sendbuf leer)
           auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
-          cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
+          // cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           sock.send(sendbuf, sendbuf.size());
           connected = false;
-          sock.close();
-          txt.reset();
+          //sock.close();
+          //txt.reset();
+          break;
+        }
+        case 0x00000000: { // no data
           break;
         }
         default: {
@@ -1418,14 +1426,13 @@ int main(int argc, char* argv[]) {
           cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
           sock.send(sendbuf, sendbuf.size());
           connected = false;
-          sock.close();
-          txt.reset();
+          //sock.close();
+          //txt.reset();
           break;
         }
       } 
       sleep_for(5ms);
   } // while(connected)
-  
   } // while(true)
 
 }
