@@ -32,7 +32,11 @@ ssh to the TXT with:
 
    ssh ft@192.168.7.2 (password is "fischertechnik")
 
-and start the program with:
+first change the execute flag of the file with:
+
+   chmod a+x ftrobopy_server
+
+then start the program with:
 
    ./ftrobopy_server
 
@@ -44,6 +48,8 @@ It is also possible to activate (even autostart upon boot)  the ftrobopy_server 
 - cd cpp
 - cp ../ftrobopy_server .
 - touch ftrobopy_server.cpp
+- chmod a+x ftrobopy_server
+- chmod a+x ftrobopy_server.cpp
 
 If a .cpp file exists, the corresponding binary (with the same name but without the .cpp extension) will be started upon starting the .cpp file in the TXT 4.0 GUI.
 
