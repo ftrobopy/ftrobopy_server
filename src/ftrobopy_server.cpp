@@ -34,6 +34,17 @@ SOFTWARE.
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+
 #include <iostream>
 #include <sstream>
 #include <thread>
@@ -49,18 +60,18 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.9.0"
+#define VERSION "0.9.4"
 
 /*
 __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.9.0"
+__version__     = "0.9.4"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "beta"
-__date__        = "04/19/2022"
+__date__        = "05/08/2022"
 */
 
 namespace kn = kissnet;
@@ -84,6 +95,8 @@ const unsigned m_version = 0x4070000;   // ROBOPro-Version 4.7.0
 
 bool camera_is_online = false;
 bool i2c_is_online = false;
+bool main_is_running = false;
+bool connected = false;
 
 class Camera {
 public:
@@ -135,13 +148,13 @@ Camera::~Camera(){
   enum v4l2_buf_type type;
   type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   if(xioctl(videv, VIDIOC_STREAMOFF, &type) == -1) {
-    //cout << "error stop streaming in camClose" << endl;
+    cout << "error stop streaming in camClose" << endl;
     //return(0);
   }
   if (buffers!=NULL) {
     for (int i = 0; i < N_CAPTURE_BUFS; i++) {
       if (munmap(buffers[i].start, buffers[i].length) == -1) {
-        //cout << "error unmapping memory buffers in camClose" << endl;
+        cout << "error unmapping memory buffers in camClose" << endl;
         //return(0);
         break;
       }
@@ -156,7 +169,7 @@ Camera::~Camera(){
 Camera::Camera(int width_, int height_, int fps_) :
   width(width_), height(height_), fps(fps_), videv(-1) 
 {
-  format = V4L2_PIX_FMT_MJPEG; // alternative: V4L2_PIX_FMT_YUYV
+  format = V4L2_PIX_FMT_MJPEG; // alternative: V4L2_PIX_FMT_YUYV or V4L2_PIX_FMT_MJPEG
   videv = open("/dev/video0", O_RDWR, 0);
   if (videv == -1) {
     cout << "error open video device" << endl;
@@ -235,13 +248,6 @@ Camera::Camera(int width_, int height_, int fps_) :
     }
   }
 
-  enum v4l2_buf_type type;
-  type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  if(xioctl(videv, VIDIOC_STREAMON, &type)==-1) {
-    cout << "error start streaming in cam_init" << endl;
-    //return(0);
-  }
-
   struct v4l2_control control = {0};
   control.id = V4L2_CID_POWER_LINE_FREQUENCY;
   control.value = 1; // 0=off 1=50Hz 2=60Hz;
@@ -249,6 +255,7 @@ Camera::Camera(int width_, int height_, int fps_) :
     cout << "error set power line frequency in cam_init" << endl;
     //return(0);
   }
+
   struct v4l2_control control2 = {0};
   control2.id = V4L2_CID_SHARPNESS;
   control2.value = 0; // switch off sharpness correction of camera
@@ -257,8 +264,15 @@ Camera::Camera(int width_, int height_, int fps_) :
     //return(0);
   }
 
-  // returns the number of the video device
-  //return(videv);  
+  enum v4l2_buf_type type;
+  type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  if(xioctl(videv, VIDIOC_STREAMON, &type)==-1) {
+    cout << "error start streaming in cam_init" << endl;
+    //return(0);
+  }
+
+  cout << "camera streaming started" << endl;
+
 }
 
 int Camera::xioctl(int fd, int request, void *arg) {
@@ -332,6 +346,9 @@ std::tuple<char*, int> Camera::getFrame(void) {
       cout << "error video buffer in camGetFrame" << endl;
       return{(char*)nullptr, 0};
     }
+
+    // cout << "buffers[buf.index=" << buf.index << "].length= " << buffers[buf.index].length << endl;
+    
     return { (char*)buffers[buf.index].start, buffers[buf.index].length};
   } else{
     return {(char*)nullptr, 0};
@@ -359,6 +376,7 @@ public:
   uint16_t GetWord();
   void Finish();
   uint32_t GetCrc() { return m_crc.m_crc; }
+  void AddCrc(uint16_t val) { m_crc.Add16bit(val); }
   bool GetError() { return m_error; }
   uint32_t GetCompressedSize() { return m_compressed_size; }
   uint8_t *GetBuffer() { return m_compressed; }
@@ -494,7 +512,8 @@ void CompBuffer::EncodeNoChangeCount() {
 }
 
 void CompBuffer::AddWord(uint16_t word, uint16_t word_for_crc) {
-  m_crc.Add16bit(word_for_crc);
+  //m_crc.Add16bit(word_for_crc);
+  AddCrc(word_for_crc);
   assert( m_word_count < max_word_count );
   // cout << "AddWord(" << word << ") CompBuffer: m_compressed_size= " << m_compressed_size << " max_compressed_size=" << max_compressed_size << endl; 
   assert( m_compressed_size < max_compressed_size-8 );
@@ -580,9 +599,6 @@ uint16_t CompBuffer::GetWord() {
         break;
     }
   }
-  //if (word==0) word = m_previous_words[m_word_count];
-  //else if (word==1 && m_previous_words[m_word_count]==1) word = 0;
-  //     else if (word==1 &&  m_previous_words[m_word_count]==0) word = 1;  
   m_previous_words[m_word_count++]=word;
   m_crc.Add16bit(word);
   return word;
@@ -661,43 +677,40 @@ struct TxtRecvData {
 
 union TxtRecvDataSimpleBuf {
   TxtRecvData txt;
-  uint16_t raw[sizeof(TxtRecvData)];
+  uint16_t raw[sizeof(TxtRecvData)/2];
 };
 
 union TxtRecvDataCompressedBuf {
   TxtRecvData txt;
-  uint16_t raw[sizeof(TxtRecvData)];
+  uint16_t raw[sizeof(TxtRecvData)/2];
 };
 
 void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) {    
-  //cout << std::dec << "width=" << width << " height=" << height << " framerate=" << framerate << endl;
-  //int videv = camInit(width, height, framerate);
   Camera cam(width, height, framerate);
-  //cout << "videv=" << videv << endl;
-  sleep_for(100ms);
-  //kn::port_t camport = 65001;
-  //kn::tcp_socket camsocket({ "0.0.0.0", camport }); 
-  //kn::socket<(kn::protocol)0> camsock;        
+
+  {
+  kn::socket<(kn::protocol)0> camsock;        
   kn::buffer<1024> cambuf;
-  //camsocket.bind();
-  //camsocket.listen();
-  
-  cout << "camera socket opened ... waiting for connection on port 65001" << endl;
-  auto camsock=camsocket->accept();
-  cout << "camera connection established" << endl;
+  cout << "camera thread started" << endl;
+  camsock=camsocket->accept();
+  camsock.set_non_blocking(true);
+  sleep_for(1500ms);
   while (camera_is_online) {
     if (cam.status()>0) {
       auto [buf, buflen] = cam.getFrame();
+      //cout << "camera: " << buflen << " bytes waiting" << endl;
       if (buflen > 0) {
+        // cout << "camera: " << buflen << " bytes waiting" << endl;
         uint32_t cam_m_resp_id = 0xBDC2D7A1;
         int framesizecompressed = buflen;
         int framesizeraw = width*height*2;
-        int numframesready = 1;
+        int numframesready = 2;
         auto camsendbuf = pystruct::pack(PY_STRING("<Iihhii"), cam_m_resp_id, numframesready, width, height, framesizeraw, framesizecompressed);
         camsock.send(camsendbuf, 20);
         char * bufc = buf;
         int bufcount = buflen;
         while (bufcount > 0) {
+          sleep_for(100us);
           if (bufcount > 1500) {
             camsock.send(bufc, 1500);
             bufcount -= 1500;
@@ -708,44 +721,49 @@ void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) 
             bufcount = 0;
           }
         }
+        sleep_for(1ms);
+        //camsock.set_non_blocking(false);
         auto [size, valid] = camsock.recv(cambuf);
         uint32_t cam_m_id = (uint8_t)cambuf[0] | (uint8_t)cambuf[1] << 8 | (uint8_t)cambuf[2] << 16 | (uint8_t)cambuf[3] << 24;
         if (cam_m_id == 0xADA09FBA) {
-          //cout << "received ACK for camera picture" << endl;
+          // cout << "received ACK for camera picture" << endl;
         } 
         else {
-          cout << "no ACK for camera picture cam_m_id = " << std::hex << cam_m_id << endl;
+          cout << "unknown ACK for camera picture received, cam_m_id = " << std::hex << cam_m_id << endl;
         }          
       }
+    } else {
+      // cout << "camera not ready" << endl;
     }
-    sleep_for(5ms);
   }
-  cout << "camera socket closed" << endl;
-  //camClose(videv);  automatic due to RAII pattern of Camera class
-  //camsock.close();
-  //camsocket.close();
+  cout << "camera thread finished." << endl;
+  } // camsock destructor is called
 }
 
 void startI2C(kn::tcp_socket* i2c_socket) {
-  cout << "I2C socket opened ... waiting for connection on port 65002" << endl;
-  auto i2csock = i2c_socket->accept();
-  cout << "I2C connection established ... (i2c functionality not yet implemented)" << endl;
-  while (i2c_is_online) {
-    sleep_for(1000ms);
-  }
-  cout << "I2C socket closed" << endl;
-  //i2csock.close();
+  //cout << "I2C thread started" << endl;
+  //cout << "I2C socket opened ... waiting for connection on port 65002" << endl;
+  { // i2csock block
+    auto i2csock = i2c_socket->accept();
+    // cout << "I2C connection established ... (i2c functionality not yet implemented)" << endl;
+    while (i2c_is_online) {
+      sleep_for(50ms);
+    }
+  } // i2csock destructor is called
+  //cout << "I2C thread finished." << endl;
 };
 
-int main(int argc, char* argv[]) {
+template<typename T> struct TD;
+// to get compiler deduced type of auto var
+//    auto [var] = foo();
+//    TD<decltype(var)> td;
 
+
+int main(int argc, char* argv[]) {
   cout << "ftrobopy and ROBOPro Online Server, version " << ftrobopy_server_version 
        << ", (c) 2022 by Torsten Stuehn" << endl;
 
-  //sleep_for(20ms);
-
   TxtConfiguration txt_conf[MAXNUMTXTS] = {};
-  TxtConfiguration previous_txt_conf[MAXNUMTXTS] = {};
 
   TxtSendDataCompressedBuf uncbuf[MAXNUMTXTS] = {};
   TxtSendDataCompressedBuf previous_uncbuf[MAXNUMTXTS] = {};
@@ -771,20 +789,17 @@ int main(int argc, char* argv[]) {
   unsigned previous_m_id;
   unsigned m_resp_id;
   bool TransferDataChanged = false;
-
-  bool connected;
-  kn::buffer<1024> recvbuf;
-  kn::port_t port = 65000; // standard port for ftrobopy communication
-
-  //if (argc >= 2) { // get port from command line if given
-  //  port = kn::port_t(strtoul(argv[1], nullptr, 10));
-  //}
+  bool FirstTransferAfterStop = true;
 
   //close program upon ctrl+c or other signals
 	std::signal(SIGINT, [](int) {
-		cout << "Got sigint signal... closing socket" << endl; 
+		cout << "Got sigint signal ..." << endl; 
     camera_is_online = false;
     i2c_is_online = false;
+    sleep_for(500ms);
+    cout << "all running threads closed." << endl;
+    main_is_running = false;
+    connected = false;
     sleep_for(100ms);
 		std::exit(0);
 	});
@@ -795,31 +810,64 @@ int main(int argc, char* argv[]) {
   //Send the SIGINT signal to server
 	std::thread run_th([] {
 		cout << "press return to close ftrobopy_server..." << endl;
-		std::cin.get(); //This call only returns when user hit RETURN
+		std::cin.get(); //This call only returns when user hits RETURN
 		std::cin.clear();
 		std::raise(SIGINT);
 	});
   run_th.detach();  
 
-  kn::tcp_socket listen_socket({ "0.0.0.0", 65000 }); 
+  kn::buffer<1024> recvbuf;
+  kn::port_t port = 65000; // standard port for ftrobopy communication
+
+  { // start of block containing open sockets
+
+  kn::tcp_socket listen_socket({ "0.0.0.0", 65000 });
   kn::tcp_socket camsocket({ "0.0.0.0", 65001 }); 
   kn::tcp_socket i2c_socket({ "0.0.0.0", 65002 }); 
-  listen_socket.bind();
+
+  try {
+    listen_socket.bind();
+  } catch (const std::exception& e) {
+    cout << "main socket (port 65000) is still in TIME_WAIT - please wait 2 minutes and try again." << endl;
+    std::exit(1);
+  }
+   
+  try {
+    i2c_socket.bind();
+  } catch (const std::exception& e) {
+      cout << "i2c socket (port 65002) is still in TIME_WAIT - please wait 2 minutes and try again." << endl;
+  std::exit(1);
+  }
+
+  try {
+    camsocket.bind();
+  } catch (const std::exception& e) {
+      cout << "camera socket (port 65001) is still in TIME_WAIT - please wait 2 minutes and try again." << endl;
+    std::exit(1);
+  }
+ 
   listen_socket.listen();
-  camsocket.bind();
-  camsocket.listen();
-  i2c_socket.bind();
+  listen_socket.set_non_blocking(true);
   i2c_socket.listen();
+  i2c_socket.set_non_blocking(true);
+  camsocket.listen();
+  camsocket.set_non_blocking(true);
 
   //kn::socket<(kn::protocol)0> sock;
   // to get compiler deduced type of auto var
   // template<typename T> struct TD;
   // TD<decltype(var)> td;
 
+  kn::socket<(kn::protocol)0> sock;
+ 
   ft::TXT txt("auto");
 
-  while(true) {
+  main_is_running = true;
 
+  bool valid_connection_established = false;
+  bool just_started = true;
+
+  while(main_is_running) {
     crc0 = 0x0bbf0714;
     crc = crc0;
     previous_crc = crc0;
@@ -830,70 +878,88 @@ int main(int argc, char* argv[]) {
     previous_recv_crc = recv_crc0;
     previous_recv_crc0 = recv_crc0;
 
-    std::memset(txt_conf, 0, sizeof txt_conf);
-    std::memset(previous_txt_conf, 0, sizeof previous_txt_conf);
     std::memset(uncbuf, 0, sizeof uncbuf);
     std::memset(previous_uncbuf, 0, sizeof previous_uncbuf);
     std::memset(recv_uncbuf, 0, sizeof recv_uncbuf);
-    std::memset(previous_recv_uncbuf, 0, sizeof previous_recv_uncbuf);
+    //std::memset(previous_recv_uncbuf, 0, sizeof previous_recv_uncbuf);
     std::memset(&simple_sendbuf, 0, sizeof simple_sendbuf);
     std::memset(&simple_recvbuf, 0, sizeof simple_recvbuf);
 
     int num_txts = 2;
 
-    // k = 0 is TXT Master
-    { int k = 0;
-      for (int i=0; i<4; i++) {
-        txt_conf[k].motor[i]        = txt_conf[k].previous_motor[i] = 1; // motor M
-        txt_conf[k].out[2*i]        = std::make_shared<ft::Encoder>(txt,i+1);
-        std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->startDistance(0);
-        std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->startSpeed(0);
-        txt_conf[k].out[2*i+1]      = NULL;
+    if (valid_connection_established || just_started) {
+      valid_connection_established = false;
+      // k = 0 is TXT Master
+      { int k = 0;
+        for (int i=0; i<4; i++) {
+          txt_conf[k].motor[i]        = txt_conf[k].previous_motor[i] = 1; // motor M
+          if (!just_started) {
+            txt_conf[k].out[2*i].reset();
+            txt_conf[k].out[2*i+1].reset();
+          }
+          txt_conf[k].out[2*i]        = std::make_unique<ft::Encoder>(txt,i+1);
+          std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->startDistance(0,0);
+          std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->startSpeed(0);
+        }
+        for (int i=0; i<8; i++) {
+          txt_conf[k].input_type[i]   = txt_conf[k].previous_input_type[i] = 1; // switch
+          txt_conf[k].input_mode[i]   = txt_conf[k].previous_input_mode[i] = 1; // digital
+          if (!just_started) {
+            txt_conf[k].in[i].reset();
+          }
+          txt_conf[k].in[i]           = std::make_unique<ft::Switch>(txt, i+1);
+        }
+        for (int i=0; i<4; i++) {
+          if (!just_started) {
+            txt_conf[k].counter[i].reset();
+          }
+          txt_conf[k].counter[i]      = std::make_unique<ft::Counter>(txt, i+1);
+        }
       }
-      for (int i=0; i<8; i++) {
-        txt_conf[k].input_type[i]   = txt_conf[k].previous_input_type[i] = 1; // switch
-        txt_conf[k].input_mode[i]   = txt_conf[k].previous_input_mode[i] = 1; // digital
-        txt_conf[k].in[i]           = std::make_shared<ft::Switch>(txt, i+1);
+      // k = 1 is TXT first Slave, currently this is used to control the servos of the TXT 4.0
+      { int k = 1;
+        for (int i=0; i<3; i++) {
+          txt_conf[k].motor[i]        = txt_conf[k].previous_motor[i] = 0; // Servos
+          if (!just_started) {
+            txt_conf[k].out[i].reset();
+          }
+          txt_conf[k].out[i]          = std::make_unique<ft::Servo>(txt,i+1);
+          std::static_pointer_cast<ft::Servo>(txt_conf[k].out[i])->setPwm(256);
+        }
       }
-      for (int i=0; i<4; i++) {
-        txt_conf[k].counter[i]      = std::make_shared<ft::Counter>(txt, i+1);
-        txt_conf[k].counter[i]->reset();
-      }
+      just_started = false;
+      txt.update_config();
     }
 
-    // k = 1 is TXT first Slave, this is only used to set the Servo PWM
-    { int k = 1;
-      for (int i=0; i<3; i++) {
-        txt_conf[k].motor[i]        = txt_conf[k].previous_motor[i] = 0; // Servos
-        txt_conf[k].out[i]          = std::make_shared<ft::Servo>(txt,i+1);
-        std::static_pointer_cast<ft::Servo>(txt_conf[k].out[i])->setPwm(256);
-      }
-    }
+    { // open block for sock 
 
-    txt.update_config();
+    sock = listen_socket.accept();
 
-    cout << "waiting for a client to connect ..." << endl;
-    auto sock = listen_socket.accept();
-    cout << "accepted, connection to client established ..." << endl;
-  
     m_id = 0;
     previous_m_id = 0;
     connected = true;
+    FirstTransferAfterStop = true;
     while (connected) {    
+        sleep_for(8ms);
         auto [size, valid] = sock.recv(recvbuf);
-        //cout << std::dec << size << " bytes received: ";
-        //for (int k=0; k<size; k++) {
-        //  cout << std::hex << (int)recvbuf[k] << " ";
-        //}
-        //cout << endl;
 
         if (!valid) {
           i2c_is_online = false;
           camera_is_online = false;
           connected = false;
-          cout << "connection to client lost!" << endl;
           continue;
         }
+        if (size == 0) {
+          continue;
+        }
+
+        valid_connection_established = true;
+
+        //cout << std::dec << size << " bytes received: ";
+        //for (int k=0; k<size; k++) {
+        //  cout << std::hex << (int)recvbuf[k] << " ";
+        //}
+        //cout << endl;
 
         previous_m_id = m_id;
         m_id = (uint8_t)recvbuf[0] | (uint8_t)recvbuf[1] << 8 | (uint8_t)recvbuf[2] << 16 | (uint8_t)recvbuf[3] << 24;
@@ -931,13 +997,18 @@ int main(int argc, char* argv[]) {
               i2c_is_online = false;
               camera_is_online = false;
               connected = false;
-              //sock.close();
-              //txt.reset();
             }
             break;
           }
           case 0x060EF27E: { // update config
-            cout << "got: update config" << endl;
+            //cout << "got: update config: ";
+            //cout << "recvbuf[0-60] : ";
+            /*
+            for (int i=0; i<60; i++) {
+              cout << std::hex << (int)recvbuf[i] << " ";
+            }
+            cout << endl;
+            */
             m_resp_id  = 0x9689A68C;
             auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
             sock.send(sendbuf, sendbuf.size());
@@ -945,28 +1016,30 @@ int main(int argc, char* argv[]) {
             // "<Ihh B B 2s BBBB BB2s BB2s BB2s BB2s BB2s BB2s BB2s BB2s B3s B3s B3s B3s 16h"
             int txt_nr = (int16_t)recvbuf[6];
             txt_conf[txt_nr].config_id = (int16_t)recvbuf[4];
-            //cout << "got update_config for txt nr. " << txt_nr << endl;
+            // if (txt_nr > 0) { cout << "got update_config for txt-ext nr. " << txt_nr << endl; }
             if (txt_nr == 0) {
-              // cout << "Txt[" << txt_nr << "]Configuration ConfigID=" << std::dec << (int)txt_conf[txt_nr].config_id << endl;
+              //cout << "update config Txt[" << txt_nr << "]Configuration ConfigID=" << std::dec << (int)txt_conf[txt_nr].config_id << endl;
               for (int i=0; i<4; i++) {
                 txt_conf[txt_nr].motor[i] = (uint8_t)recvbuf[12+i];
                 //cout << "Txt[" << txt_nr << "]Configuration Motor[" << i << "]=" << (int)txt_conf[txt_nr].motor[i] << endl; 
                 if (txt_conf[txt_nr].motor[i] != txt_conf[txt_nr].previous_motor[i]) {
                   if (txt_conf[txt_nr].previous_motor[i] != 0) {
-                    //delete txt_conf[txt_nr].out[i*2];
+                    //cout << "out[" << i*2 << "] = Lamp";
+                    //cout << "out[" << i*2+1 << "] = Lamp";
+                    std::static_pointer_cast<ft::MotorDevice>(txt_conf[txt_nr].out[i*2])->stop();
                     txt_conf[txt_nr].out[i*2].reset();
                     txt_conf[txt_nr].out[i*2+1].reset();
-                    txt_conf[txt_nr].out[i*2] = std::make_shared<ft::Lamp>(txt, i*2+1 );
-                    txt_conf[txt_nr].out[i*2+1] = std::make_shared<ft::Lamp>(txt, i*2+1+1);
+                    txt_conf[txt_nr].out[i*2] = std::make_unique<ft::Lamp>(txt, i*2+1 );
+                    txt_conf[txt_nr].out[i*2+1] = std::make_unique<ft::Lamp>(txt, i*2+1+1);
                     std::static_pointer_cast<ft::Lamp>(txt_conf[txt_nr].out[i*2])->setBrightness(0);
                     std::static_pointer_cast<ft::Lamp>(txt_conf[txt_nr].out[i*2+1])->setBrightness(0);
+                    txt_conf[txt_nr].counter[i]->reset();
                   } else {
-                    //delete txt_conf[txt_nr].out[i*2];
-                    //delete txt_conf[txt_nr].out[i*2+1];
+                    //cout << "out[" << i*2 << "] = Encoder";
                     txt_conf[txt_nr].out[i*2].reset();
                     txt_conf[txt_nr].out[i*2+1].reset();
-                    txt_conf[txt_nr].out[i*2] = std::make_shared<ft::Encoder>(txt, i*2+1);
-                    std::static_pointer_cast<ft::Encoder>(txt_conf[txt_nr].out[i*2])->startDistance(0);
+                    txt_conf[txt_nr].out[i*2] = std::make_unique<ft::Encoder>(txt, i*2+1);
+                    std::static_pointer_cast<ft::Encoder>(txt_conf[txt_nr].out[i*2])->startDistance(0,0);
                     std::static_pointer_cast<ft::Encoder>(txt_conf[txt_nr].out[i*2])->startSpeed(0);
                     txt_conf[txt_nr].counter[i]->reset();
                     txt_conf[txt_nr].is_running[i] = false;
@@ -981,43 +1054,42 @@ int main(int argc, char* argv[]) {
                 //cout << "Txt[" << txt_nr << "]Configuration Input[" << i << "].type=" << (int)txt_conf[txt_nr].input_type[i] << " , Input[" << i << "].mode=" << (int)txt_conf[txt_nr].input_mode[i] << endl;
                 if (txt_conf[txt_nr].input_type[i] != txt_conf[txt_nr].previous_input_type[i] ||
                     txt_conf[txt_nr].input_mode[i] != txt_conf[txt_nr].input_mode[i]) {
-                  //delete txt_conf[txt_nr].in[i];
+
+                  txt_conf[txt_nr].in[i].reset();
+
                   if (txt_conf[txt_nr].input_mode[i] != 0) {  // digital input
                     switch (txt_conf[txt_nr].input_type[i]) {
                       case 0:
-                        txt_conf[txt_nr].in[i].reset();
-                        txt_conf[txt_nr].in[i] = std::make_shared<ft::TrailFollower>(txt, i+1); 
+                        txt_conf[txt_nr].in[i] = std::make_unique<ft::TrailFollower>(txt, i+1); 
+                        //cout << "set input I" << i+1 << " = Trailfollower" << endl;
                         break;
                       case 1:
-                        txt_conf[txt_nr].in[i].reset();
-                        txt_conf[txt_nr].in[i] = std::make_shared<ft::Switch>(txt, i+1); 
+                        txt_conf[txt_nr].in[i] = std::make_unique<ft::Switch>(txt, i+1); 
+                        //cout << "set input I" << i+1 << " = Switch" << endl;
                         break;
                       default:
-                        cout << "error: unknown digital input type " << txt_conf[txt_nr].input_type[i] << endl;
-                        txt_conf[txt_nr].in[i].reset();
-                        txt_conf[txt_nr].in[i] = std::make_shared<ft::Switch>(txt, i+1); 
+                        //cout << "error: unknown digital input type " << txt_conf[txt_nr].input_type[i] << endl;
+                        txt_conf[txt_nr].in[i] = std::make_unique<ft::Switch>(txt, i+1); 
                       break;
                     }
                   } else { // analog input
                     switch (txt_conf[txt_nr].input_type[i]) {
                       case 0:
-                        txt_conf[txt_nr].in[i].reset();
-                        txt_conf[txt_nr].in[i] = std::make_shared<ft::Voltmeter>(txt, i+1);
+                        txt_conf[txt_nr].in[i] = std::make_unique<ft::Voltmeter>(txt, i+1);
+                        //cout << "set input I" << i+1 << " = Voltmeter" << endl;
                         break;
                       case 1:
-                        txt_conf[txt_nr].in[i].reset();
-                        txt_conf[txt_nr].in[i] = std::make_shared<ft::Resistor>(txt, i+1);
+                        txt_conf[txt_nr].in[i] = std::make_unique<ft::Resistor>(txt, i+1);
+                        //cout << "set input I" << i+1 << " = Resistor" << endl;
                         break;
                       case 3:
-                        txt_conf[txt_nr].in[i].reset();
-                        txt_conf[txt_nr].in[i] = std::make_shared<ft::Ultrasonic>(txt, i+1);
-                        txt.update_config();
+                        txt_conf[txt_nr].in[i] = std::make_unique<ft::Ultrasonic>(txt, i+1);
+                        //cout << "set input I" << i+1 << " = Ultrasonic" << endl;
                         //cout << "txt_conf[" << txt_nr << "].in[" << i << "] = Ultrasonic" << endl;
                         break;
                       default:
                         cout << "error: unknown digital input type " << txt_conf[txt_nr].input_type[i] << endl;
-                        txt_conf[txt_nr].in[i].reset();
-                        txt_conf[txt_nr].in[i] = std::make_shared<ft::Voltmeter>(txt, i+1); 
+                        txt_conf[txt_nr].in[i] = std::make_unique<ft::Voltmeter>(txt, i+1); 
                       break;
                     }
                   }
@@ -1029,7 +1101,7 @@ int main(int argc, char* argv[]) {
             }
             else if (txt_nr == 1) {
               for (int i=0; i<3; i++) {
-                std::static_pointer_cast<ft::Servo>(txt_conf[txt_nr].out[i])->setPwm(0); // Servo
+                std::static_pointer_cast<ft::Servo>(txt_conf[txt_nr].out[i])->setPwm(256); // Servo
               }
             }
             break;
@@ -1088,6 +1160,7 @@ int main(int argc, char* argv[]) {
                 txt_conf[0].is_running[i] =  std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->isRunning();
                 if (txt_conf[0].previous_is_running[i] && !txt_conf[0].is_running[i]) {
                   simple_sendbuf.txt.motor_cmd_id[i] = txt_conf[0].running_motor_cmd_id[i];
+                  //cout << "new motor_cmd_id=" << simple_sendbuf.txt.motor_cmd_id[i] << endl;
                 } 
               }
             }
@@ -1109,16 +1182,19 @@ int main(int argc, char* argv[]) {
             // prepare simple recv buffer
             /////////////////////////////
             // pwm
-            for (int i=0; i<8; i++) {
-              simple_recvbuf.txt.pwm[i] = (uint8_t)recvbuf[2*i+4] | (uint8_t)recvbuf[2*i+5]<<8;
-              if (simple_recvbuf.txt.pwm[i] != previous_simple_recvbuf.txt.pwm[i]) {
-                previous_simple_recvbuf.txt.pwm[i] = simple_recvbuf.txt.pwm[i];
-                if (txt_conf[0].motor[i/2] == 1) {
-                  std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*(i/2)])->
-                              startSpeed(simple_recvbuf.txt.pwm[2*(i/2)]
-                                      -(simple_recvbuf.txt.pwm[2*(i/2)+1]));     // ft::Encoder(txt,i+1)
+            for (int i=0; i<4; i++) {
+              simple_recvbuf.txt.pwm[2*i]   = (uint8_t)recvbuf[2*(2*i)  +4] | (uint8_t)recvbuf[2*(2*i)  +5]<<8;
+              simple_recvbuf.txt.pwm[2*i+1] = (uint8_t)recvbuf[2*(2*i+1)+4] | (uint8_t)recvbuf[2*(2*i+1)+5]<<8;
+              if ((simple_recvbuf.txt.pwm[2*i]   != previous_simple_recvbuf.txt.pwm[2*i]) || 
+                  (simple_recvbuf.txt.pwm[2*i+1] != previous_simple_recvbuf.txt.pwm[2*i+1])) {
+                previous_simple_recvbuf.txt.pwm[2*i]   = simple_recvbuf.txt.pwm[2*i];
+                previous_simple_recvbuf.txt.pwm[2*i+1] = simple_recvbuf.txt.pwm[2*i+1];
+                if (txt_conf[0].motor[i] == 1) {
+                  int speed = simple_recvbuf.txt.pwm[2*i] - simple_recvbuf.txt.pwm[2*i+1];
+                  std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->startSpeed(speed);  // ft::Encoder(txt,i+1)
                 } else {
-                  std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[i])->setBrightness(simple_recvbuf.txt.pwm[i]);
+                  std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[2*i])->setBrightness(simple_recvbuf.txt.pwm[2*i]);
+                  std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[2*i+1])->setBrightness(simple_recvbuf.txt.pwm[2*i+1]);
                 }
               }
             }
@@ -1127,17 +1203,25 @@ int main(int argc, char* argv[]) {
               simple_recvbuf.txt.motor_sync[i] = (uint8_t)recvbuf[2*i+20] | (uint8_t)recvbuf[2*i+21]<<8;
               simple_recvbuf.txt.motor_dist[i] = (uint8_t)recvbuf[2*i+28] | (uint8_t)recvbuf[2*i+29]<<8;
               simple_recvbuf.txt.motor_cmd_id[i] = (uint8_t)recvbuf[2*i+36] | (uint8_t)recvbuf[2*i+37]<<8;
-              if (simple_recvbuf.txt.motor_cmd_id[i] > previous_simple_recvbuf.txt.motor_cmd_id[i]) {
+              //cout << "sync[" << i << "] = " << simple_recvbuf.txt.motor_sync[i] << " ";
+              //cout << "dist[" << i << "] = " << simple_recvbuf.txt.motor_dist[i] << " ";
+              //cout << "M_cmd_id[" << i << "] = " << simple_recvbuf.txt.motor_cmd_id[i] << endl;
+              if (simple_recvbuf.txt.motor_cmd_id[i] != previous_simple_recvbuf.txt.motor_cmd_id[i]) {
                 //cout << "motor_cmd_id increased in simple_recv" << endl;
+                //cout << "speed[" << i << "] = " << (simple_recvbuf.txt.pwm[2*i] - simple_recvbuf.txt.pwm[2*i+1]) << " ";
+                //cout << "sync[" << i << "] = " << simple_recvbuf.txt.motor_sync[i] << " ";
+                //cout << "dist[" << i << "] = " << simple_recvbuf.txt.motor_dist[i] << " ";
+                //cout << "M_cmd_id[" << i << "] = " << simple_recvbuf.txt.motor_cmd_id[i] << " ";
                 previous_simple_recvbuf.txt.motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
                 txt_conf[0].running_motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
-                std::static_pointer_cast<ft::Counter>(txt_conf[0].counter[i])->reset();
+                //std::static_pointer_cast<ft::Counter>(txt_conf[0].counter[i])->reset();
                 if (simple_recvbuf.txt.motor_sync[i] == 0) {
                   std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->
                               startDistance(simple_recvbuf.txt.motor_dist[i], 0);
                 } else {
                   std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->
-                              startDistance(simple_recvbuf.txt.motor_dist[i], 2^i+2^(simple_recvbuf.txt.motor_sync[i]-1));
+                       startDistance(simple_recvbuf.txt.motor_dist[i],
+                          std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*(simple_recvbuf.txt.motor_sync[i]-1)]).get());
                 }
                 txt_conf[0].is_running[i] = std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->isRunning();
               }
@@ -1145,7 +1229,7 @@ int main(int argc, char* argv[]) {
             // counter
             for (int i=0; i<4; i++) {
               simple_recvbuf.txt.counter_cmd_id[i] = (uint8_t)recvbuf[2*i+44] | (uint8_t)recvbuf[2*i+45]<<8;
-              if (simple_recvbuf.txt.counter_cmd_id[i] > previous_simple_recvbuf.txt.counter_cmd_id[i]) {
+              if (simple_recvbuf.txt.counter_cmd_id[i] != previous_simple_recvbuf.txt.counter_cmd_id[i]) {
                 previous_simple_recvbuf.txt.counter_cmd_id[i] = simple_recvbuf.txt.counter_cmd_id[i];
                 std::static_pointer_cast<ft::Counter>(txt_conf[0].counter[i])->reset();
                 txt_conf[0].counter_cmd_id[i] = simple_recvbuf.txt.counter_cmd_id[i];
@@ -1154,7 +1238,7 @@ int main(int argc, char* argv[]) {
             break;
           }        
           case  0xFBC56F98: {
-            //cout << "got: exchange data compressed" << endl;
+            // cout << "got: exchange data compressed" << endl;
             m_resp_id = 0x6F3B54E6;
             unsigned m_extrasize;
             unsigned recv_m_extrasize;
@@ -1168,16 +1252,112 @@ int main(int argc, char* argv[]) {
             //cout << "receive buffer extrasize = " << recv_m_extrasize << endl;
             recv_crc = (uint8_t)recvbuf[8] | (uint8_t)recvbuf[9] << 8 | (uint8_t)recvbuf[10] << 16 | (uint8_t)recvbuf[11] << 24;
             //cout << "receive buffer crc = " << recv_crc << endl; // 0x40493a53
-            
+
+            /////////////////////////////
+            // uncompress receive buffer
+            /////////////////////////////
+            if (recv_crc != previous_recv_crc) {
+              previous_recv_crc = recv_crc;
+              //cout << "got: new exchange data compressed" << endl;
+              //cout << "receive buffer extrasize = " << std::dec << recv_m_extrasize << endl;
+              //cout << "receive buffer crc = " << std::hex << recv_crc << endl; // 0x40493a53
+              //for (int i=0; i<recv_m_extrasize; i++) {
+              //  recv_buf[i] = recvbuf[i+16];
+              //  cout << std::hex << (int)recv_buf[i] << " ";
+              //}
+              //cout << endl;
+              memcpy(previous_recv_uncbuf, recv_uncbuf, sizeof(TxtRecvDataCompressedBuf)*num_txts);              
+              recv_compbuf.Reset();
+              recv_compbuf.SetBuffer((uint8_t*)(recvbuf.data())+16,1024-16);
+              //cout << "received      : ";
+              for (int k=0; k<num_txts; k++) {
+                for (int i=0; i<(sizeof(TxtRecvData)-1)/2; i++) {
+                  int w = recv_compbuf.GetWord();
+                  int z = previous_recv_uncbuf[k].raw[i];
+                  if (w==0) recv_uncbuf[k].raw[i]=z;
+                  else
+                    if (w==1 && z==1) recv_uncbuf[k].raw[i]=0;
+                    else
+                      if (w==1 && z==0) recv_uncbuf[k].raw[i]=1;
+                      else recv_uncbuf[k].raw[i]=w;
+                  //cout << std::hex << recv_uncbuf[k].raw[i] << " " << std::flush; 
+                } 
+              }  
+              //cout << endl;
+
+              /*
+              if (recv_crc != recv_compbuf.GetCrc()) {
+                //cout << "ERROR: received CRC does not match calculated CRC!" << endl;
+                //cout << "       transmitted crc = " << recv_crc <<"  calculated crc = " << recv_compbuf.GetCrc() << endl;
+                cout << "crc ok" << endl;
+              } else {
+                cout << "bad crc" << endl;
+              }
+              */
+
+              //previous_recv_crc = recv_compbuf.GetCrc(); // before:recv_crc;
+
+              { int k = 0;  //for (int k=0; k<num_txts; k++)
+
+                // pwm
+                for (int i=0; i<4; i++) {
+                  if ((recv_uncbuf[k].txt.pwm[2*i] != previous_recv_uncbuf[k].txt.pwm[2*i]) ||
+                      (recv_uncbuf[k].txt.pwm[2*i+1] != previous_recv_uncbuf[k].txt.pwm[2*i+1])) {
+                    if (txt_conf[k].motor[i] == 1) {
+                      int speed = recv_uncbuf[k].txt.pwm[2*i] - (recv_uncbuf[k].txt.pwm[2*i+1]);
+                      std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->startSpeed(speed);     // ft::Encoder(txt,i+1)
+                    } else {
+                      std::static_pointer_cast<ft::Lamp>(txt_conf[k].out[2*i])->setBrightness(recv_uncbuf[k].txt.pwm[i]);
+                      std::static_pointer_cast<ft::Lamp>(txt_conf[k].out[2*i+1])->setBrightness(recv_uncbuf[k].txt.pwm[i]);
+                    }
+                  }
+                }
+
+                // encoder distance
+                for (int i=0; i<4; i++) {
+                  if (recv_uncbuf[k].txt.motor_cmd_id[i] != previous_recv_uncbuf[k].txt.motor_cmd_id[i]) {
+                    txt_conf[k].running_motor_cmd_id[i] = recv_uncbuf[k].txt.motor_cmd_id[i];
+                    //std::static_pointer_cast<ft::Counter>(txt_conf[k].counter[i])->reset();
+                    //uncbuf[k].txt.counter_cmd_id[i] = recv_uncbuf[k].txt.counter_cmd_id[i];
+                    if (recv_uncbuf[k].txt.motor_sync[i] == 0) {
+                      std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->
+                                  startDistance(recv_uncbuf[k].txt.motor_dist[i], 0);
+                    } else {
+                        std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->
+                             startDistance(recv_uncbuf[k].txt.motor_dist[i],
+                                std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*(recv_uncbuf[k].txt.motor_sync[i]-1)]).get()
+                             );
+                    }
+                    txt_conf[k].is_running[i] = std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->isRunning();
+                  }
+                }
+
+                // counter
+                for (int i=0; i<4; i++) {
+                  if (recv_uncbuf[k].txt.counter_cmd_id[i] != previous_recv_uncbuf[k].txt.counter_cmd_id[i]) {
+                    std::static_pointer_cast<ft::Counter>(txt_conf[k].counter[i])->reset();
+                    uncbuf[k].txt.counter_cmd_id[i] = recv_uncbuf[k].txt.counter_cmd_id[i];
+                    txt_conf[k].counter_cmd_id[i] = uncbuf[k].txt.counter_cmd_id[i];
+                  }
+                }
+              }
+
+              { int k = 1;
+                // servo pwm
+                for (int i=0; i<3; i++) {
+                  if (recv_uncbuf[k].txt.pwm[i] != previous_recv_uncbuf[k].txt.pwm[i]) {
+                    std::static_pointer_cast<ft::Servo>(txt_conf[k].out[i])->setPwm(recv_uncbuf[k].txt.pwm[i]);
+                  }
+                }
+              }
+            }
+
             /////////////////////////////
             // prepare send buffer
-            /////////////////////////////
-
+            /////////////////////////////            
+            std::memset(uncbuf, 0, sizeof uncbuf);
             { int k = 0;
               for (int i=0; i<8; i++) {
-                //cout << "txt_conf ptr = " << txt_conf[0].in[i]->getConn() << endl;
-                //uncbuf[k].txt.input[i] = txt_conf[k].in[i]->getState();
-
                   if (txt_conf[k].input_mode[i] != 0) {  // digital input
                     switch (txt_conf[k].input_type[i]) {
                       case 0:
@@ -1241,6 +1421,7 @@ int main(int argc, char* argv[]) {
                 }
               }
             }
+            /*
             { int k = 1;
               for (int i=0; i<8; i++) {
                 uncbuf[k].txt.input[i] = 0;
@@ -1250,23 +1431,30 @@ int main(int argc, char* argv[]) {
                 uncbuf[k].txt.counter[i] = 0;
               }
             }
-
-            if (TransferDataChanged) {
+            */
+            if (TransferDataChanged || FirstTransferAfterStop) {
+              FirstTransferAfterStop = false;
+              //cout << "sent exch_data: ";
               send_compbuf.Reset();
               for (int k=0; k<num_txts; k++) {
                 // cout << "sizeof(TxtSendDataCompressed) = " << std::dec << sizeof(TxtSendDataCompressed) << endl;
                 for (int i=0; i<sizeof(TxtSendDataCompressed)/2; i++) {
                   if (uncbuf[k].raw[i] == previous_uncbuf[k].raw[i]) {
-                    send_compbuf.AddWord(0, uncbuf[k].raw[i]);
+                    //send_compbuf.AddWord(0, uncbuf[k].raw[i]);
+                    send_compbuf.AddWord(0, previous_uncbuf[k].raw[i]);
+                    //cout << std::hex << 0 << " ";
                   } else {
                       if (uncbuf[k].raw[i] == 0) {
                         send_compbuf.AddWord(1, 0);
+                        //cout << std::hex << 1 << " ";
                       } else {
                         send_compbuf.AddWord(uncbuf[k].raw[i], uncbuf[k].raw[i]);
+                        //cout << std::hex << uncbuf[k].raw[i] << " ";
                       }
                     }  
                 }
               }
+              //cout << endl;
               send_compbuf.Finish();
               memcpy(previous_uncbuf, uncbuf, sizeof(TxtSendDataCompressedBuf)*num_txts);
               crc = send_compbuf.GetCrc();
@@ -1275,11 +1463,13 @@ int main(int argc, char* argv[]) {
               m_extrasize = send_compbuf.GetCompressedSize();
               TransferDataChanged = false;
               //cout << "m_extrasize=" << std::dec << m_extrasize << "  CRC=0x" << std::hex << crc << endl;
-              //cout << "send_body: "; for (int i=0; i<m_extrasize; i++) cout << std::hex << (int)send_body[i] << " "; cout << endl;
+              //cout << "sent exchdata: "; for (int i=0; i<m_extrasize; i++) cout << std::hex << (int)send_body[i] << " "; cout << endl;
             } else {
               crc = previous_crc;
               send_body =  send_compbuf.cmpbuf0;
               m_extrasize = 2;
+              //cout << "sent exch_data: " << std::hex << (int)send_compbuf.cmpbuf0[0] << " " << (int)send_compbuf.cmpbuf0[1] << endl;
+              //cout << "sent same, was: "; for (int k=0; k<num_txts; k++) for (int i=0; i<sizeof(TxtSendDataCompressed)/2; i++) cout << std::hex << (int)previous_uncbuf[k].raw[i] << " "; cout << endl;
             }
 
             auto header = pystruct::pack(PY_STRING("<IIIHH"),
@@ -1295,93 +1485,6 @@ int main(int argc, char* argv[]) {
 
             //cout << "  --> sending back " << std::dec << header.size()+m_extrasize << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
             sock.send(sendbuf, header.size()+m_extrasize);
-
-            /////////////////////////////
-            // uncompress receive buffer
-            /////////////////////////////
-            if (recv_crc != previous_recv_crc) {
-              previous_recv_crc = recv_crc;
-              //cout << "got: new exchange data compressed" << endl;
-              //cout << "receive buffer extrasize = " << std::dec << recv_m_extrasize << endl;
-              //cout << "receive buffer crc = " << std::hex << recv_crc << endl; // 0x40493a53
-              //for (int i=0; i<recv_m_extrasize; i++) {
-              //  recv_buf[i] = recvbuf[i+16];
-              //  cout << std::hex << (int)recv_buf[i] << " ";
-              //}
-              //cout << endl;
-              memcpy(previous_recv_uncbuf, recv_uncbuf, sizeof(TxtRecvDataCompressedBuf)*num_txts);
-              recv_compbuf.Reset();
-              recv_compbuf.SetBuffer((uint8_t*)(recvbuf.data())+16,1024-16);
-              for (int k=0; k<num_txts; k++) {
-                for (int i=0; i<(sizeof(TxtRecvData)-1)/2; i++) {
-                  int w = recv_compbuf.GetWord();
-                  int z = previous_recv_uncbuf[k].raw[i];
-                  if (w==0) recv_uncbuf[k].raw[i]=z;
-                  else
-                    if (w==1 && z==1) recv_uncbuf[k].raw[i]=0;
-                    else
-                      if (w==1 && z==0) recv_uncbuf[k].raw[i]=1;
-                      else recv_uncbuf[k].raw[i]=w;
-                  //cout << std::hex << recv_uncbuf[k].raw[i] << "(" << w << ") " << std::flush; 
-                } 
-              }  
-              cout << endl;
-              if (recv_crc != recv_compbuf.GetCrc()) {
-                //cout << "ERROR: received CRC does not match calculated CRC!" << endl;
-                //cout << "transmitted crc = " << recv_crc <<"  calculated crc = " << recv_compbuf.GetCrc() << endl;
-              }
-              { int k = 0;  //for (int k=0; k<num_txts; k++)
-
-                // pwm
-                for (int i=0; i<8; i++) {
-                  if (recv_uncbuf[k].txt.pwm[i] != previous_recv_uncbuf[k].txt.pwm[i]) {
-                    if (txt_conf[k].motor[i/2] == 1) {
-                      std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*(i/2)])->
-                                  startSpeed(recv_uncbuf[k].txt.pwm[2*(i/2)]
-                                          -(recv_uncbuf[k].txt.pwm[2*(i/2)+1]));     // ft::Encoder(txt,i+1)
-                    } else {
-                      std::static_pointer_cast<ft::Lamp>(txt_conf[k].out[i])->setBrightness(recv_uncbuf[k].txt.pwm[i]);
-                    }
-                  }
-                }
-
-                // encoder distance
-                for (int i=0; i<4; i++) {
-                  if (recv_uncbuf[k].txt.motor_cmd_id[i] > previous_recv_uncbuf[k].txt.motor_cmd_id[i]) {
-                    txt_conf[k].running_motor_cmd_id[i] = recv_uncbuf[k].txt.motor_cmd_id[i];
-                    std::static_pointer_cast<ft::Counter>(txt_conf[k].counter[i])->reset();
-                    uncbuf[k].txt.counter_cmd_id[i] = recv_uncbuf[k].txt.counter_cmd_id[i];
-                    if (recv_uncbuf[k].txt.motor_sync[i] == 0) {
-                      std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->
-                                  startDistance(recv_uncbuf[k].txt.motor_dist[i], 0);
-                    } else {
-                      std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->
-                                  startDistance(recv_uncbuf[k].txt.motor_dist[i], 2^i+2^(recv_uncbuf[k].txt.motor_sync[i]-1));
-                    }
-                    txt_conf[k].is_running[i] = std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->isRunning();
-                  }
-                }
-
-                // counter
-                for (int i=0; i<4; i++) {
-                  if (recv_uncbuf[k].txt.counter_cmd_id[i] > previous_recv_uncbuf[k].txt.counter_cmd_id[i]) {
-                    std::static_pointer_cast<ft::Counter>(txt_conf[k].counter[i])->reset();
-                    uncbuf[k].txt.counter_cmd_id[i] = recv_uncbuf[k].txt.counter_cmd_id[i];
-                    txt_conf[k].counter_cmd_id[i] = uncbuf[k].txt.counter_cmd_id[i];
-                  }
-                }
-              }
-
-              { int k = 1;
-                // servo pwm
-                for (int i=0; i<3; i++) {
-                  if (recv_uncbuf[k].txt.pwm[i] != previous_recv_uncbuf[k].txt.pwm[i]) {
-                    std::static_pointer_cast<ft::Servo>(txt_conf[k].out[i])->setPwm(recv_uncbuf[k].txt.pwm[i]);
-                  }
-                }
-              }
-
-            }
             break;
           }
           case 0x882A40A6: { // startCameraOnline
@@ -1406,7 +1509,7 @@ int main(int argc, char* argv[]) {
             break;
           }   
           case 0xACAB31F7: { // "Stop all running programs" pressed in ROBOPro
-            cout << "got: ACAB31F7 (stop all running programs button pressed in ROBOPro)" << endl;
+            cout << "got: Stop all running programs button pressed in ROBOPro" << endl;
             m_resp_id  = 0x15B1758E;
             auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
             // cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
@@ -1414,20 +1517,16 @@ int main(int argc, char* argv[]) {
             connected = false;
             camera_is_online = false;
             i2c_is_online = false;
-            //sock.close();
-            //txt.reset();
             break;
           }
           case 0xDAF84364: { // Upload Program to TXT
-            cout << "got: DAF84364 (Upload Program to TXT)" << endl;
+            cout << "got: Upload Program to TXT" << endl;
             m_resp_id  = 0x5170C53B; // +sendbuf (Speicherlayout) = 00 60 7d b6 00 00 40 00 48 d9 6b b6 00 24 00 00
             // ("kein Speicherlayout erhalten!"-Fehler in ROBOPro, wenn sendbuf leer)
             auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
             // cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
             sock.send(sendbuf, sendbuf.size());
             connected = false;
-            //sock.close();
-            //txt.reset();
             break;
           }
           case 0x00000000: { // no data
@@ -1446,12 +1545,17 @@ int main(int argc, char* argv[]) {
             cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
             sock.send(sendbuf, sendbuf.size());
             connected = false;
-            //sock.close();
-            //txt.reset();
             break;
           }
         } 
-        sleep_for(5ms);
     } // while(connected)
-  } // while(true)
+    } // close block of sock to call its destructor
+  } // while(main_is_running)
+  listen_socket.shutdown();
+  i2c_socket.shutdown();
+  camsocket.shutdown();
+  sleep_for(100ms);
+ } // end of block containing open sockets
+ cout << "ftrobopy_server closed." << endl;
+ sleep_for(100ms);
 } // main

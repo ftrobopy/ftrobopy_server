@@ -9,15 +9,12 @@ Currently supported functions are:
 - fast input counters C1-C4
 - outputs O1-O8 / motors M1-M4 (including distance checking and synchronization)
 - online camera streaming (ftrobopy and ROBOPro)
+- servo-output support (via O1-O3 of first Extension, initialize ftrobopy with extension support "use_extension=True" to get this feature)
 
 The program is written in C/C++ (std=c++17) and can be compiled with the preinstalled gcc-compiler on the TXT 4.0.
 
-Warning:Please be aware that the code is still unstructured and very experimental.
-It should not be used in any production environment.
-
 Future plans:
-
-- servo-output support (via O1-O3 of first Extension)
+- extended synchronization support for 4 motors
 - I2C support
 - BT-Remote control support (this needs some intrusion on the root level of the TXT 4.0 firmware)
 - support to use (old) TXT controllers as Extensions for a (Master)-TXT 4.0 via WiFi network
@@ -32,11 +29,7 @@ ssh to the TXT with:
 
    ssh ft@192.168.7.2 (password is "fischertechnik")
 
-first change the execute flag of the file with:
-
-   chmod a+x ftrobopy_server
-
-then start the program with:
+and start the program with:
 
    ./ftrobopy_server
 
@@ -48,8 +41,6 @@ It is also possible to activate (even autostart upon boot)  the ftrobopy_server 
 - cd cpp
 - cp ../ftrobopy_server .
 - touch ftrobopy_server.cpp
-- chmod a+x ftrobopy_server
-- chmod a+x ftrobopy_server.cpp
 
 If a .cpp file exists, the corresponding binary (with the same name but without the .cpp extension) will be started upon starting the .cpp file in the TXT 4.0 GUI.
 
