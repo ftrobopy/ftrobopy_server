@@ -60,18 +60,18 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.9.4"
+#define VERSION "0.9.5"
 
 /*
 __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.9.4"
+__version__     = "0.9.5"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "beta"
-__date__        = "05/08/2022"
+__date__        = "05/13/2022"
 */
 
 namespace kn = kissnet;
@@ -866,6 +866,7 @@ int main(int argc, char* argv[]) {
 
   bool valid_connection_established = false;
   bool just_started = true;
+  bool ftScratchTXTMode = false;
 
   while(main_is_running) {
     crc0 = 0x0bbf0714;
@@ -939,6 +940,7 @@ int main(int argc, char* argv[]) {
     previous_m_id = 0;
     connected = true;
     FirstTransferAfterStop = true;
+    ftScratchTXTMode = false;
     while (connected) {    
         sleep_for(8ms);
         auto [size, valid] = sock.recv(recvbuf);
@@ -975,6 +977,7 @@ int main(int argc, char* argv[]) {
             //}
             //cout << endl;
             sock.send(sendbuf, sendbuf.size());
+            ftScratchTXTMode = false;
             break;
           }
           case 0x163FF61D: { // start online
@@ -997,6 +1000,26 @@ int main(int argc, char* argv[]) {
               i2c_is_online = false;
               camera_is_online = false;
               connected = false;
+            } else {
+              ftScratchTXTMode = true;
+              cout << "Connected to ftScratchTXT" << endl;
+              // make sure all outputs are set to lamps, ftScratchTXT
+              for (int i=0; i<4; i++) {
+                if (txt_conf[0].motor[i] != 0) {
+                  std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[i*2])->startSpeed(0);
+                  std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[i*2])->startDistance(0, 0);
+                  std::static_pointer_cast<ft::MotorDevice>(txt_conf[0].out[i*2])->stop();
+                  txt_conf[0].out[i*2].reset();
+                  txt_conf[0].out[i*2+1].reset();
+                  txt_conf[0].out[i*2] = std::make_unique<ft::Lamp>(txt, i*2+1 );
+                  txt_conf[0].out[i*2+1] = std::make_unique<ft::Lamp>(txt, i*2+1+1);
+                  std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[i*2])->setBrightness(0);
+                  std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[i*2+1])->setBrightness(0);
+                  txt_conf[0].counter[i]->reset();
+                  txt_conf[0].previous_motor[i] = txt_conf[0].motor[i] = 0;
+                }
+              }
+              txt.update_config();
             }
             break;
           }
@@ -1018,34 +1041,38 @@ int main(int argc, char* argv[]) {
             txt_conf[txt_nr].config_id = (int16_t)recvbuf[4];
             // if (txt_nr > 0) { cout << "got update_config for txt-ext nr. " << txt_nr << endl; }
             if (txt_nr == 0) {
+              bool needsUpdateConfig = false;
               //cout << "update config Txt[" << txt_nr << "]Configuration ConfigID=" << std::dec << (int)txt_conf[txt_nr].config_id << endl;
               for (int i=0; i<4; i++) {
-                txt_conf[txt_nr].motor[i] = (uint8_t)recvbuf[12+i];
                 //cout << "Txt[" << txt_nr << "]Configuration Motor[" << i << "]=" << (int)txt_conf[txt_nr].motor[i] << endl; 
-                if (txt_conf[txt_nr].motor[i] != txt_conf[txt_nr].previous_motor[i]) {
-                  if (txt_conf[txt_nr].previous_motor[i] != 0) {
-                    //cout << "out[" << i*2 << "] = Lamp";
-                    //cout << "out[" << i*2+1 << "] = Lamp";
-                    std::static_pointer_cast<ft::MotorDevice>(txt_conf[txt_nr].out[i*2])->stop();
-                    txt_conf[txt_nr].out[i*2].reset();
-                    txt_conf[txt_nr].out[i*2+1].reset();
-                    txt_conf[txt_nr].out[i*2] = std::make_unique<ft::Lamp>(txt, i*2+1 );
-                    txt_conf[txt_nr].out[i*2+1] = std::make_unique<ft::Lamp>(txt, i*2+1+1);
-                    std::static_pointer_cast<ft::Lamp>(txt_conf[txt_nr].out[i*2])->setBrightness(0);
-                    std::static_pointer_cast<ft::Lamp>(txt_conf[txt_nr].out[i*2+1])->setBrightness(0);
-                    txt_conf[txt_nr].counter[i]->reset();
-                  } else {
-                    //cout << "out[" << i*2 << "] = Encoder";
-                    txt_conf[txt_nr].out[i*2].reset();
-                    txt_conf[txt_nr].out[i*2+1].reset();
-                    txt_conf[txt_nr].out[i*2] = std::make_unique<ft::Encoder>(txt, i*2+1);
-                    std::static_pointer_cast<ft::Encoder>(txt_conf[txt_nr].out[i*2])->startDistance(0,0);
-                    std::static_pointer_cast<ft::Encoder>(txt_conf[txt_nr].out[i*2])->startSpeed(0);
-                    txt_conf[txt_nr].counter[i]->reset();
-                    txt_conf[txt_nr].is_running[i] = false;
-                    txt_conf[txt_nr].previous_is_running[i] = false;
+                if (!ftScratchTXTMode) {
+                  txt_conf[txt_nr].motor[i] = (uint8_t)recvbuf[12+i];
+                  if (txt_conf[txt_nr].motor[i] != txt_conf[txt_nr].previous_motor[i]) {
+                    needsUpdateConfig = true;
+                    if (txt_conf[txt_nr].previous_motor[i] != 0) {
+                      //cout << "out[" << i*2 << "] = Lamp";
+                      //cout << "out[" << i*2+1 << "] = Lamp";
+                      std::static_pointer_cast<ft::MotorDevice>(txt_conf[txt_nr].out[i*2])->stop();
+                      txt_conf[txt_nr].out[i*2].reset();
+                      txt_conf[txt_nr].out[i*2+1].reset();
+                      txt_conf[txt_nr].out[i*2] = std::make_unique<ft::Lamp>(txt, i*2+1 );
+                      txt_conf[txt_nr].out[i*2+1] = std::make_unique<ft::Lamp>(txt, i*2+1+1);
+                      std::static_pointer_cast<ft::Lamp>(txt_conf[txt_nr].out[i*2])->setBrightness(0);
+                      std::static_pointer_cast<ft::Lamp>(txt_conf[txt_nr].out[i*2+1])->setBrightness(0);
+                      txt_conf[txt_nr].counter[i]->reset();
+                    } else {
+                      //cout << "out[" << i*2 << "] = Encoder";
+                      txt_conf[txt_nr].out[i*2].reset();
+                      txt_conf[txt_nr].out[i*2+1].reset();
+                      txt_conf[txt_nr].out[i*2] = std::make_unique<ft::Encoder>(txt, i+1);
+                      std::static_pointer_cast<ft::Encoder>(txt_conf[txt_nr].out[i*2])->startDistance(0,0);
+                      std::static_pointer_cast<ft::Encoder>(txt_conf[txt_nr].out[i*2])->startSpeed(0);
+                      txt_conf[txt_nr].counter[i]->reset();
+                      txt_conf[txt_nr].is_running[i] = false;
+                      txt_conf[txt_nr].previous_is_running[i] = false;
+                    }
+                    txt_conf[txt_nr].previous_motor[i] = txt_conf[txt_nr].motor[i];
                   }
-                  txt_conf[txt_nr].previous_motor[i] = txt_conf[txt_nr].motor[i];
                 }
               }
               for (int i=0; i<8; i++) {
@@ -1055,7 +1082,8 @@ int main(int argc, char* argv[]) {
                 if (txt_conf[txt_nr].input_type[i] != txt_conf[txt_nr].previous_input_type[i] ||
                     txt_conf[txt_nr].input_mode[i] != txt_conf[txt_nr].input_mode[i]) {
 
-                  txt_conf[txt_nr].in[i].reset();
+                  txt_conf[txt_nr].in[i].reset(); // reset shared_ptr and call destructor of InputDevice;
+                  needsUpdateConfig = true;
 
                   if (txt_conf[txt_nr].input_mode[i] != 0) {  // digital input
                     switch (txt_conf[txt_nr].input_type[i]) {
@@ -1097,7 +1125,10 @@ int main(int argc, char* argv[]) {
                   txt_conf[txt_nr].previous_input_mode[i] = txt_conf[txt_nr].input_mode[i];
                 }
               }
-              txt.update_config();
+              if (needsUpdateConfig) {
+                txt.update_config();
+                cout << "TXT4.0 configuration updated" << endl;
+              }
             }
             else if (txt_nr == 1) {
               for (int i=0; i<3; i++) {
@@ -1109,6 +1140,7 @@ int main(int argc, char* argv[]) {
           case 0xCC3597BA: {
             //cout << "got: exchange data simple" << endl;
             m_resp_id = 0x4EEFAC41;
+
             //cout << "recvbuf[0-60] : ";
             //for (int i=0; i<60; i++) {
             //  cout << std::hex << (int)recvbuf[i] << " ";
@@ -1181,6 +1213,116 @@ int main(int argc, char* argv[]) {
             /////////////////////////////
             // prepare simple recv buffer
             /////////////////////////////
+            for (int i=0; i<4; i++) {
+              previous_simple_recvbuf.txt.motor_sync[i]   = simple_recvbuf.txt.motor_sync[i];
+              previous_simple_recvbuf.txt.motor_dist[i]   = simple_recvbuf.txt.motor_dist[i];
+              previous_simple_recvbuf.txt.motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
+              previous_simple_recvbuf.txt.pwm[2*i]        = simple_recvbuf.txt.pwm[2*i];
+              previous_simple_recvbuf.txt.pwm[2*i+1]      = simple_recvbuf.txt.pwm[2*i+1];
+              txt_conf[0].previous_motor[i]               = txt_conf[0].motor[i];
+              simple_recvbuf.txt.pwm[2*i]        = (uint8_t)recvbuf[2*(2*i)  +4] | (uint8_t)recvbuf[2*(2*i)  +5]<<8;
+              simple_recvbuf.txt.pwm[2*i+1]      = (uint8_t)recvbuf[2*(2*i+1)+4] | (uint8_t)recvbuf[2*(2*i+1)+5]<<8;
+              simple_recvbuf.txt.motor_sync[i]   = (uint8_t)recvbuf[2*i+20] | (uint8_t)recvbuf[2*i+21]<<8;
+              simple_recvbuf.txt.motor_dist[i]   = (uint8_t)recvbuf[2*i+28] | (uint8_t)recvbuf[2*i+29]<<8;
+              simple_recvbuf.txt.motor_cmd_id[i] = (uint8_t)recvbuf[2*i+36] | (uint8_t)recvbuf[2*i+37]<<8;
+            }
+            
+            if (ftScratchTXTMode) {
+              // ftScratchTXT does not configure outputs in update cycle, motor[i] is always 0 (=lamp)
+              // this is fine as long as distance or sync are not needed. In this case the TXT 4.0 needs to
+              // reconfigure to motor if neccessary here
+              for (int i=0; i<4; i++) {
+                int msync  = simple_recvbuf.txt.motor_sync[i];
+                int mdist  = simple_recvbuf.txt.motor_dist[i];
+                if (simple_recvbuf.txt.motor_cmd_id[i] != previous_simple_recvbuf.txt.motor_cmd_id[i]) {
+                  txt_conf[0].running_motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
+                  if (msync || mdist) {
+                    // if either motor_sync or motor_dist != 0 make sure there is a motor object       
+                    if (txt_conf[0].motor[i] == 0)  {
+                      cout << "reconfigure M" << i+1 << " to be motor" << endl;
+                      txt_conf[0].motor[i] = 1;
+                      std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[i*2])->setBrightness(0);
+                      std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[i*2+1])->setBrightness(0);
+                      txt_conf[0].out[i*2].reset();
+                      txt_conf[0].out[i*2+1].reset();
+                      txt_conf[0].out[i*2] = std::make_unique<ft::Encoder>(txt, i+1);
+                      if (msync) {
+                        if (txt_conf[0].motor[msync-1] == 0) {
+                          cout << "reconfigure M" << msync << " to be motor" << endl;
+                          txt_conf[0].motor[msync-1] = 1;
+                          std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[(msync-1)*2])->setBrightness(0);
+                          std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[(msync-1)*2+1])->setBrightness(0);
+                          txt_conf[0].out[(msync-1)*2].reset();
+                          txt_conf[0].out[(msync-1)*2+1].reset();
+                          txt_conf[0].out[(msync-1)*2] = std::make_unique<ft::Encoder>(txt, msync);
+                        }
+                        std::static_pointer_cast<ft::Encoder>(
+                          txt_conf[0].out[i*2])->startDistance(mdist,
+                          std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*(msync-1)]).get());
+                        cout << "startet distance " << mdist << " cycle for motor M" << i+1 << " synched to motor M" << msync << endl;
+                        std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[i*2])->startSpeed(simple_recvbuf.txt.pwm[2*i] - simple_recvbuf.txt.pwm[2*i+1]);
+                        std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[(msync-1)*2])->startDistance(mdist, 0);
+                        cout << "startet distance " << mdist << " cycle for motor M" << msync << endl;                        
+                        std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[(msync-1)*2])->startSpeed(simple_recvbuf.txt.pwm[2*(msync-1)] - simple_recvbuf.txt.pwm[2*(msync-1)+1]);
+                        txt_conf[0].is_running[msync-1] = false;
+                        txt_conf[0].previous_is_running[msync-1] = false;
+                      } else {
+                        std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[i*2])->startDistance(mdist, 0);
+                        std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[i*2])->startSpeed(simple_recvbuf.txt.pwm[2*i] - simple_recvbuf.txt.pwm[2*i+1]);
+                        cout << "startet distance " << mdist << " cycle for motor M" << i+1 << endl;
+                      }
+                      //txt_conf[0].counter[i]->reset();
+                      txt_conf[0].is_running[i] = false;
+                      txt_conf[0].previous_is_running[i] = false;
+                    } else {
+                      if (msync) {
+                        if (txt_conf[0].motor[msync-1] == 0) {
+                          cout << "reconfigure M" << msync << " to be motor" << endl;
+                          txt_conf[0].motor[msync-1] = 1;
+                          std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[(msync-1)*2])->setBrightness(0);
+                          std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[(msync-1)*2+1])->setBrightness(0);
+                          txt_conf[0].out[(msync-1)*2].reset();
+                          txt_conf[0].out[(msync-1)*2+1].reset();
+                          txt_conf[0].out[(msync-1)*2] = std::make_unique<ft::Encoder>(txt, msync);
+                        }
+                        std::static_pointer_cast<ft::Encoder>(
+                          txt_conf[0].out[i*2])->startDistance(mdist,
+                          std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*(msync-1)]).get());
+                        cout << "startet distance " << mdist << " cycle for motor M" << i+1 << " synched to motor M" << msync << endl;
+                        std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[i*2])->startSpeed(simple_recvbuf.txt.pwm[2*i] - simple_recvbuf.txt.pwm[2*i+1]);
+                        std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[(msync-1)*2])->startDistance(mdist, 0);
+                        cout << "startet distance " << mdist << " cycle for motor M" << msync << endl;                        
+                        std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[(msync-1)*2])->startSpeed(simple_recvbuf.txt.pwm[2*(msync-1)] - simple_recvbuf.txt.pwm[2*(msync-1)+1]);
+                        txt_conf[0].is_running[msync-1] = false;
+                        txt_conf[0].previous_is_running[msync-1] = false;
+                      } else {
+                        std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[i*2])->startDistance(mdist, 0);
+                        std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[i*2])->startSpeed(simple_recvbuf.txt.pwm[2*i] - simple_recvbuf.txt.pwm[2*i+1]);
+                        cout << "startet distance " << mdist << " cycle for motor M" << i+1 << endl;
+                      }
+                      txt_conf[0].is_running[i] = false;
+                      txt_conf[0].previous_is_running[i] = false;
+                    }                    
+                  } else {
+                    // if motor_sync and motor_dist == 0 reconfigure to lamp objects (may be also used for simple motor on off)
+                    if (txt_conf[0].motor[i] != 0) {
+                      cout << "reconfigure O" << 2*i+1 << " and O" << 2*i+1+1  << " to be lamps" << endl;
+                      txt_conf[0].motor[i] = 0;
+                      std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[i*2])->startDistance(0,0);
+                      std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[i*2])->startSpeed(0);
+                      std::static_pointer_cast<ft::MotorDevice>(txt_conf[0].out[i*2])->stop();
+                      txt_conf[0].out[i*2].reset();
+                      txt_conf[0].out[i*2+1].reset();
+                      txt_conf[0].out[i*2] = std::make_unique<ft::Lamp>(txt, i*2+1 );
+                      txt_conf[0].out[i*2+1] = std::make_unique<ft::Lamp>(txt, i*2+1+1);
+                      std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[i*2])->setBrightness(simple_recvbuf.txt.pwm[2*i]);
+                      std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[i*2+1])->setBrightness(simple_recvbuf.txt.pwm[2*i]);
+                    }
+                  }
+                }
+              }
+            }
+
             // pwm
             for (int i=0; i<4; i++) {
               simple_recvbuf.txt.pwm[2*i]   = (uint8_t)recvbuf[2*(2*i)  +4] | (uint8_t)recvbuf[2*(2*i)  +5]<<8;
@@ -1199,31 +1341,35 @@ int main(int argc, char* argv[]) {
               }
             }
             // encoder
-            for (int i=0; i<4; i++) {
-              simple_recvbuf.txt.motor_sync[i] = (uint8_t)recvbuf[2*i+20] | (uint8_t)recvbuf[2*i+21]<<8;
-              simple_recvbuf.txt.motor_dist[i] = (uint8_t)recvbuf[2*i+28] | (uint8_t)recvbuf[2*i+29]<<8;
-              simple_recvbuf.txt.motor_cmd_id[i] = (uint8_t)recvbuf[2*i+36] | (uint8_t)recvbuf[2*i+37]<<8;
-              //cout << "sync[" << i << "] = " << simple_recvbuf.txt.motor_sync[i] << " ";
-              //cout << "dist[" << i << "] = " << simple_recvbuf.txt.motor_dist[i] << " ";
-              //cout << "M_cmd_id[" << i << "] = " << simple_recvbuf.txt.motor_cmd_id[i] << endl;
-              if (simple_recvbuf.txt.motor_cmd_id[i] != previous_simple_recvbuf.txt.motor_cmd_id[i]) {
-                //cout << "motor_cmd_id increased in simple_recv" << endl;
-                //cout << "speed[" << i << "] = " << (simple_recvbuf.txt.pwm[2*i] - simple_recvbuf.txt.pwm[2*i+1]) << " ";
+            if (!ftScratchTXTMode) {
+              for (int i=0; i<4; i++) {
+                simple_recvbuf.txt.motor_sync[i] = (uint8_t)recvbuf[2*i+20] | (uint8_t)recvbuf[2*i+21]<<8;
+                simple_recvbuf.txt.motor_dist[i] = (uint8_t)recvbuf[2*i+28] | (uint8_t)recvbuf[2*i+29]<<8;
+                simple_recvbuf.txt.motor_cmd_id[i] = (uint8_t)recvbuf[2*i+36] | (uint8_t)recvbuf[2*i+37]<<8;
                 //cout << "sync[" << i << "] = " << simple_recvbuf.txt.motor_sync[i] << " ";
                 //cout << "dist[" << i << "] = " << simple_recvbuf.txt.motor_dist[i] << " ";
-                //cout << "M_cmd_id[" << i << "] = " << simple_recvbuf.txt.motor_cmd_id[i] << " ";
-                previous_simple_recvbuf.txt.motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
-                txt_conf[0].running_motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
-                //std::static_pointer_cast<ft::Counter>(txt_conf[0].counter[i])->reset();
-                if (simple_recvbuf.txt.motor_sync[i] == 0) {
-                  std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->
-                              startDistance(simple_recvbuf.txt.motor_dist[i], 0);
-                } else {
-                  std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->
-                       startDistance(simple_recvbuf.txt.motor_dist[i],
-                          std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*(simple_recvbuf.txt.motor_sync[i]-1)]).get());
+                //cout << "M_cmd_id[" << i << "] = " << simple_recvbuf.txt.motor_cmd_id[i] << endl;
+                if (simple_recvbuf.txt.motor_cmd_id[i] != previous_simple_recvbuf.txt.motor_cmd_id[i]) {
+                  //cout << "motor_cmd_id increased in simple_recv" << endl;
+                  //cout << "speed[" << i << "] = " << (simple_recvbuf.txt.pwm[2*i] - simple_recvbuf.txt.pwm[2*i+1]) << " ";
+                  //cout << "sync[" << i << "] = " << simple_recvbuf.txt.motor_sync[i] << " ";
+                  //cout << "dist[" << i << "] = " << simple_recvbuf.txt.motor_dist[i] << " ";
+                  //cout << "M_cmd_id[" << i << "] = " << simple_recvbuf.txt.motor_cmd_id[i] << " ";
+                  previous_simple_recvbuf.txt.motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
+                  txt_conf[0].running_motor_cmd_id[i] = simple_recvbuf.txt.motor_cmd_id[i];
+                  //std::static_pointer_cast<ft::Counter>(txt_conf[0].counter[i])->reset();
+                        if (simple_recvbuf.txt.motor_sync[i] == 0) {
+                    std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->
+                                startDistance(simple_recvbuf.txt.motor_dist[i], 0);
+                    //cout << "startet distance " << simple_recvbuf.txt.motor_dist[i] << " cycle for motor M" << i+1 << endl;
+                  } else {
+                    std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->
+                        startDistance(simple_recvbuf.txt.motor_dist[i],
+                            std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*(simple_recvbuf.txt.motor_sync[i]-1)]).get());
+                    //cout << "startet distance " << simple_recvbuf.txt.motor_dist[i] << " cycle for motor M" << i+1 << " synched to motor M" << simple_recvbuf.txt.motor_sync[i] << endl;
+                  }
+                  txt_conf[0].is_running[i] = std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->isRunning();
                 }
-                txt_conf[0].is_running[i] = std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->isRunning();
               }
             }
             // counter
@@ -1232,9 +1378,10 @@ int main(int argc, char* argv[]) {
               if (simple_recvbuf.txt.counter_cmd_id[i] != previous_simple_recvbuf.txt.counter_cmd_id[i]) {
                 previous_simple_recvbuf.txt.counter_cmd_id[i] = simple_recvbuf.txt.counter_cmd_id[i];
                 std::static_pointer_cast<ft::Counter>(txt_conf[0].counter[i])->reset();
+                //cout << "counter C" << i+1 << " reset to 0" << endl;
                 txt_conf[0].counter_cmd_id[i] = simple_recvbuf.txt.counter_cmd_id[i];
               }
-            }
+            }            
             break;
           }        
           case  0xFBC56F98: {
