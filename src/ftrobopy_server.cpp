@@ -60,18 +60,18 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.9.5"
+#define VERSION "0.9.6"
 
 /*
 __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.9.5"
+__version__     = "0.9.6"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "beta"
-__date__        = "05/13/2022"
+__date__        = "05/16/2022"
 */
 
 namespace kn = kissnet;
@@ -91,7 +91,12 @@ const unsigned m_version = 0x4070000;   // ROBOPro-Version 4.7.0
 
 #define MAXNUMTXTS 9  // maximum=9 (1 master + 8 slaves)
 
-#define N_CAPTURE_BUFS 2
+#define N_CAPTURE_BUFS 1
+
+// some of the fischertechnik servos don't reach 0 or 512
+// therefore we constrain the values here
+#define MIN_PWM_CYCL 30
+#define MAX_PWM_CYCL 490
 
 bool camera_is_online = false;
 bool i2c_is_online = false;
@@ -147,22 +152,24 @@ Camera& Camera::operator=(Camera&& other) noexcept {
 Camera::~Camera(){
   enum v4l2_buf_type type;
   type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  if(xioctl(videv, VIDIOC_STREAMOFF, &type) == -1) {
-    cout << "error stop streaming in camClose" << endl;
-    //return(0);
-  }
-  if (buffers!=NULL) {
-    for (int i = 0; i < N_CAPTURE_BUFS; i++) {
-      if (munmap(buffers[i].start, buffers[i].length) == -1) {
-        cout << "error unmapping memory buffers in camClose" << endl;
-        //return(0);
-        break;
-      }
-    }
-    free(buffers);
-  }
   if (videv != -1) {
-    close(videv);
+    if(xioctl(videv, VIDIOC_STREAMOFF, &type) == -1) {
+      cout << "error stop streaming in camClose" << endl;
+      //return(0);
+    }
+    if (buffers!=NULL) {
+      for (int i = 0; i < N_CAPTURE_BUFS; i++) {
+        if (munmap(buffers[i].start, buffers[i].length) == -1) {
+          cout << "error unmapping memory buffers in camClose" << endl;
+          //return(0);
+          break;
+        }
+      }
+      free(buffers);
+    }
+    if (videv != -1) {
+      close(videv);
+    }
   }
 }
 
@@ -291,7 +298,7 @@ int Camera::status(void) {
     cout << "error query buffer in camStatus" << endl;
     return(0);
   }
-  // returns number of frames waiting  
+  // returns sequence number of waiting frame, if 0: no frame waiting
   return(buf.sequence);
 }
 
@@ -686,31 +693,38 @@ union TxtRecvDataCompressedBuf {
 };
 
 void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) {    
-  Camera cam(width, height, framerate);
-
   {
   kn::socket<(kn::protocol)0> camsock;        
   kn::buffer<1024> cambuf;
   cout << "camera thread started" << endl;
   camsock=camsocket->accept();
   camsock.set_non_blocking(true);
-  sleep_for(1500ms);
+  //sleep_for(1500ms);
+
+  Camera cam(width, height, framerate);
+
   while (camera_is_online) {
-    if (cam.status()>0) {
+    if (cam.status() > 0) {
       auto [buf, buflen] = cam.getFrame();
-      //cout << "camera: " << buflen << " bytes waiting" << endl;
       if (buflen > 0) {
-        // cout << "camera: " << buflen << " bytes waiting" << endl;
+        //cout << "camera: " << buflen << " bytes waiting" << endl;
         uint32_t cam_m_resp_id = 0xBDC2D7A1;
         int framesizecompressed = buflen;
         int framesizeraw = width*height*2;
         int numframesready = 2;
         auto camsendbuf = pystruct::pack(PY_STRING("<Iihhii"), cam_m_resp_id, numframesready, width, height, framesizeraw, framesizecompressed);
         camsock.send(camsendbuf, 20);
+        /* Error numbers from kissnet are:
+			    errored                         = 0x0
+			    valid                           = 0x1
+			    cleanly_disconnected            = 0x2
+			    non_blocking_would_have_blocked = 0x3
+			    timed_out                       = 0x4
+        */
         char * bufc = buf;
         int bufcount = buflen;
         while (bufcount > 0) {
-          sleep_for(100us);
+          sleep_for(50us);
           if (bufcount > 1500) {
             camsock.send(bufc, 1500);
             bufcount -= 1500;
@@ -720,13 +734,19 @@ void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) 
             camsock.send(bufc, bufcount);
             bufcount = 0;
           }
+          //cout << "still " << bufcount << " bytes of camera picture to send" << endl;
         }
         sleep_for(1ms);
         //camsock.set_non_blocking(false);
         auto [size, valid] = camsock.recv(cambuf);
+        //{ int cs = (int)camsock.get_status();
+        //  if (cs != 1) {
+        //    cout << "error when waiting for camera picture ACK (errornr=" << cs << ")" << endl;
+        //  }
+        // }
         uint32_t cam_m_id = (uint8_t)cambuf[0] | (uint8_t)cambuf[1] << 8 | (uint8_t)cambuf[2] << 16 | (uint8_t)cambuf[3] << 24;
         if (cam_m_id == 0xADA09FBA) {
-          // cout << "received ACK for camera picture" << endl;
+          //cout << "received ACK for camera picture" << endl;
         } 
         else {
           cout << "unknown ACK for camera picture received, cam_m_id = " << std::hex << cam_m_id << endl;
@@ -735,9 +755,11 @@ void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) 
     } else {
       // cout << "camera not ready" << endl;
     }
+    sleep_for(1ms);  
   }
   cout << "camera thread finished." << endl;
   } // camsock destructor is called
+  sleep_for(20ms); // Camera destructor is called here
 }
 
 void startI2C(kn::tcp_socket* i2c_socket) {
@@ -751,6 +773,7 @@ void startI2C(kn::tcp_socket* i2c_socket) {
     }
   } // i2csock destructor is called
   //cout << "I2C thread finished." << endl;
+  sleep_for(20ms);
 };
 
 template<typename T> struct TD;
@@ -824,6 +847,10 @@ int main(int argc, char* argv[]) {
   kn::tcp_socket listen_socket({ "0.0.0.0", 65000 });
   kn::tcp_socket camsocket({ "0.0.0.0", 65001 }); 
   kn::tcp_socket i2c_socket({ "0.0.0.0", 65002 }); 
+
+  listen_socket.set_reuse_addr_port();
+  camsocket.set_reuse_addr_port();
+  i2c_socket.set_reuse_addr_port();
 
   try {
     listen_socket.bind();
@@ -941,8 +968,9 @@ int main(int argc, char* argv[]) {
     connected = true;
     FirstTransferAfterStop = true;
     ftScratchTXTMode = false;
+    
     while (connected) {    
-        sleep_for(8ms);
+        sleep_for(5ms);
         auto [size, valid] = sock.recv(recvbuf);
 
         if (!valid) {
@@ -1443,7 +1471,7 @@ int main(int argc, char* argv[]) {
               */
 
               //previous_recv_crc = recv_compbuf.GetCrc(); // before:recv_crc;
-
+              
               { int k = 0;  //for (int k=0; k<num_txts; k++)
 
                 // pwm
@@ -1468,13 +1496,15 @@ int main(int argc, char* argv[]) {
                     //uncbuf[k].txt.counter_cmd_id[i] = recv_uncbuf[k].txt.counter_cmd_id[i];
                     if (recv_uncbuf[k].txt.motor_sync[i] == 0) {
                       std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->
-                                  startDistance(recv_uncbuf[k].txt.motor_dist[i], 0);
+                              startDistance(recv_uncbuf[k].txt.motor_dist[i], 0);
+                      //cout << "M" << i << " synched to none" << endl;
                     } else {
-                        std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->
-                             startDistance(recv_uncbuf[k].txt.motor_dist[i],
-                                std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*(recv_uncbuf[k].txt.motor_sync[i]-1)]).get()
-                             );
-                    }
+                      std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->
+                              startDistance(recv_uncbuf[k].txt.motor_dist[i],
+                                   std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*(recv_uncbuf[k].txt.motor_sync[i]-1)]).get()
+                              );
+                        //cout << "M" << i << " synched to M" << recv_uncbuf[k].txt.motor_sync[i] << endl;
+                    }                    
                     txt_conf[k].is_running[i] = std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->isRunning();
                   }
                 }
@@ -1493,8 +1523,38 @@ int main(int argc, char* argv[]) {
                 // servo pwm
                 for (int i=0; i<3; i++) {
                   if (recv_uncbuf[k].txt.pwm[i] != previous_recv_uncbuf[k].txt.pwm[i]) {
+                    int pwmcycl = recv_uncbuf[k].txt.pwm[i];
+                    if (pwmcycl < MIN_PWM_CYCL) {
+                      pwmcycl = MIN_PWM_CYCL;
+                    } else {
+                        if (pwmcycl > MAX_PWM_CYCL) {
+                          pwmcycl = MAX_PWM_CYCL;
+                        }
+                    }
+                    //cout << "pwmcyl S" << i+1 << " = " << pwmcycl << endl;
                     std::static_pointer_cast<ft::Servo>(txt_conf[k].out[i])->setPwm(recv_uncbuf[k].txt.pwm[i]);
                   }
+                }
+                // if (O4 of Extension1 (EM1)) > 0 then all 4 motors of txt[0] (Master) shall be synched
+                if (recv_uncbuf[k].txt.pwm[3] > 64) {
+                  cout << "synchronize all 4 motors" << endl;
+                  for (int i=0; i<4; i++) {
+                    std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->
+                            startDistance(recv_uncbuf[0].txt.motor_dist[i], 0x0f);
+                  }
+                } else {
+                  cout << "unsynch all 4 motors" << endl;
+                  for (int i=0; i<4; i++) {
+                    if (recv_uncbuf[0].txt.motor_sync[i] == 0) {
+                      std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->
+                              startDistance(recv_uncbuf[0].txt.motor_dist[i], 0);
+                    } else {
+                      std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->
+                              startDistance(recv_uncbuf[0].txt.motor_dist[i],
+                                   std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*(recv_uncbuf[0].txt.motor_sync[i]-1)]).get()
+                              );
+                    }                    
+                 }
                 }
               }
             }
@@ -1676,6 +1736,15 @@ int main(int argc, char* argv[]) {
             connected = false;
             break;
           }
+          case 0x4A87C47A: { // Upgrade ROBOPro to new version (the rest of the buffer contains the filename "/tmp/update.sh")
+            cout << "ROBOPro wants to upgrade to a new ROBOPro version: This is not supported on the TXT 4.0!" << endl;
+            m_resp_id = 0x01020304; // reply with invalid response_id
+            auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
+            // cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
+            sock.send(sendbuf, sendbuf.size());
+            connected = false;
+            break;
+          }
           case 0x00000000: { // no data
             break;
           }
@@ -1684,10 +1753,10 @@ int main(int argc, char* argv[]) {
             cout << "m_id=" << std::hex << m_id << endl;
             cout << std::dec << size << " bytes received: ";
             for (int k=0; k<size; k++) {
-            cout << std::hex << (int)recvbuf[k] << " ";
+              cout << std::hex << (int)recvbuf[k] << " ";
             }
             cout << endl;     
-            m_resp_id = 0x0;
+            m_resp_id = 0x01020304;
             auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
             cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
             sock.send(sendbuf, sendbuf.size());
