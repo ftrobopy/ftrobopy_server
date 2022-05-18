@@ -927,7 +927,6 @@ int main(int argc, char* argv[]) {
     //cout << endl;
   }
   
-
   /*
   num_txts:
   1: crc0 = bbf0714
@@ -939,8 +938,6 @@ int main(int argc, char* argv[]) {
   7: crc0 = eac26c88
   8: crc0 = 80cdfb3c
   */
-
-  crc0 = 0x542ffacd;
 
   while(main_is_running) {
     sleep_for(5ms);
