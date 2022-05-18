@@ -60,18 +60,18 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.9.6"
+#define VERSION "0.9.7"
 
 /*
 __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.9.6"
+__version__     = "0.9.7"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "beta"
-__date__        = "05/16/2022"
+__date__        = "05/18/2022"
 */
 
 namespace kn = kissnet;
@@ -390,7 +390,6 @@ public:
   void SetBuffer(uint8_t* buffer, int bufsize);
   int32_t GetWordCount() { return m_word_count; }
   uint16_t GetPrevWord(int32_t i) { return m_previous_words[i]; }
-  uint8_t cmpbuf0[2] = {0xfd, 0x54}; // { 253, 34 }; for only TXT without servos
 protected:
   enum {max_word_count=4096};
   uint16_t m_previous_words[max_word_count];
@@ -699,7 +698,7 @@ void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) 
   cout << "camera thread started" << endl;
   camsock=camsocket->accept();
   camsock.set_non_blocking(true);
-  //sleep_for(1500ms);
+  sleep_for(1000ms);
 
   Camera cam(width, height, framerate);
 
@@ -755,7 +754,7 @@ void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) 
     } else {
       // cout << "camera not ready" << endl;
     }
-    sleep_for(1ms);  
+    sleep_for(10ms);  
   }
   cout << "camera thread finished." << endl;
   } // camsock destructor is called
@@ -798,12 +797,15 @@ int main(int argc, char* argv[]) {
   TxtRecvDataSimpleBuf simple_recvbuf = {};
   TxtRecvDataSimpleBuf previous_simple_recvbuf = {};
 
-  uint32_t crc0 = 0x628ebb05; // 0x0bbf0714 for one TXT without servos
+  uint32_t crc0; // = 0x628ebb05; // 0x0bbf0714 for one TXT without servos
   uint32_t crc = crc0;
   uint32_t previous_crc = crc0;
   uint32_t previous_crc0 = crc0;
 
-  uint32_t recv_crc0 = 0x3040c10f;
+  uint8_t cmpbuf0[10]; // = {0xfd, 0x88}; //num_txts=3   // num_txts==2:{0xfd, 0x54}; // { 253, 34 }; for only TXT without servos
+  unsigned cmpbuf0size;
+
+  uint32_t recv_crc0; // = 0x3040c10f;
   uint32_t recv_crc = recv_crc0;
   uint32_t previous_recv_crc = recv_crc0;
   uint32_t previous_recv_crc0 = recv_crc0;
@@ -816,7 +818,7 @@ int main(int argc, char* argv[]) {
 
   //close program upon ctrl+c or other signals
 	std::signal(SIGINT, [](int) {
-		cout << "Got sigint signal ..." << endl; 
+		cout << "Got SIGINT signal ..." << endl; 
     camera_is_online = false;
     i2c_is_online = false;
     sleep_for(500ms);
@@ -832,6 +834,7 @@ int main(int argc, char* argv[]) {
 
   //Send the SIGINT signal to server
 	std::thread run_th([] {
+    sleep_for(500ms);
 		cout << "press return to close ftrobopy_server..." << endl;
 		std::cin.get(); //This call only returns when user hits RETURN
 		std::cin.clear();
@@ -895,8 +898,52 @@ int main(int argc, char* argv[]) {
   bool just_started = true;
   bool ftScratchTXTMode = false;
 
+  int num_txts = 2; // 1 Master + 1 Extension
+
+  if (num_txts > MAXNUMTXTS) {
+    cout << "Only " << MAXNUMTXTS << " TXTs are supported in total." << endl;
+    std::raise(SIGINT);
+  }
+  // calc crc0 and cmpbuf0 according to total number of TXTs
+  {
+    uint8_t test_buf[1024];
+    CompBuffer cbuf(test_buf, 1024);
+    cbuf.Reset();
+    for (int k=0; k<num_txts; k++) {
+      for (int i=0; i<sizeof(TxtSendDataCompressed)/2; i++) {
+         cbuf.AddWord(0, 0);
+      }
+    }
+    cbuf.Finish();
+    crc0 = cbuf.GetCrc();
+    cmpbuf0size = cbuf.GetCompressedSize();
+    memcpy(cmpbuf0, cbuf.GetBuffer(), cmpbuf0size);
+   
+    //cout << "Using 1 Master + " << num_txts-1 << " Extensions, " << std::dec << "(crc0=" << std::hex << crc0 << ")" << endl;
+    //cout << "cmpbuf0=";
+    //for (int i=0; i<cbuf.GetCompressedSize(); i++) {
+    //  cout << std::hex << (int) cmpbuf0[i];
+    //}
+    //cout << endl;
+  }
+  
+
+  /*
+  num_txts:
+  1: crc0 = bbf0714
+  2: crc0 = 628ebb05
+  3: crc0 = 542ffacd
+  4: crc0 = b6e7509e
+  5: crc0 = c33c1d91
+  6: crc0 = 504ab305
+  7: crc0 = eac26c88
+  8: crc0 = 80cdfb3c
+  */
+
+  crc0 = 0x542ffacd;
+
   while(main_is_running) {
-    crc0 = 0x0bbf0714;
+    sleep_for(5ms);
     crc = crc0;
     previous_crc = crc0;
     previous_crc0 = crc0;
@@ -913,7 +960,8 @@ int main(int argc, char* argv[]) {
     std::memset(&simple_sendbuf, 0, sizeof simple_sendbuf);
     std::memset(&simple_recvbuf, 0, sizeof simple_recvbuf);
 
-    int num_txts = 2;
+
+    std::memset(uncbuf, 0, sizeof uncbuf);
 
     if (valid_connection_established || just_started) {
       valid_connection_established = false;
@@ -970,7 +1018,7 @@ int main(int argc, char* argv[]) {
     ftScratchTXTMode = false;
     
     while (connected) {    
-        sleep_for(5ms);
+        sleep_for(2ms);
         auto [size, valid] = sock.recv(recvbuf);
 
         if (!valid) {
@@ -1053,13 +1101,12 @@ int main(int argc, char* argv[]) {
           }
           case 0x060EF27E: { // update config
             //cout << "got: update config: ";
-            //cout << "recvbuf[0-60] : ";
-            /*
-            for (int i=0; i<60; i++) {
-              cout << std::hex << (int)recvbuf[i] << " ";
-            }
-            cout << endl;
-            */
+            //cout << "recvbuf[0-60] : ";            
+            //for (int i=0; i<60; i++) {
+            //  cout << std::hex << (int)recvbuf[i] << " ";
+            //}
+            //cout << endl;
+            
             m_resp_id  = 0x9689A68C;
             auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
             sock.send(sendbuf, sendbuf.size());
@@ -1444,7 +1491,7 @@ int main(int argc, char* argv[]) {
               memcpy(previous_recv_uncbuf, recv_uncbuf, sizeof(TxtRecvDataCompressedBuf)*num_txts);              
               recv_compbuf.Reset();
               recv_compbuf.SetBuffer((uint8_t*)(recvbuf.data())+16,1024-16);
-              //cout << "received      : ";
+              cout << "received      : ";
               for (int k=0; k<num_txts; k++) {
                 for (int i=0; i<(sizeof(TxtRecvData)-1)/2; i++) {
                   int w = recv_compbuf.GetWord();
@@ -1455,10 +1502,10 @@ int main(int argc, char* argv[]) {
                     else
                       if (w==1 && z==0) recv_uncbuf[k].raw[i]=1;
                       else recv_uncbuf[k].raw[i]=w;
-                  //cout << std::hex << recv_uncbuf[k].raw[i] << " " << std::flush; 
+                  cout << std::hex << recv_uncbuf[k].raw[i] << " " << std::flush; 
                 } 
               }  
-              //cout << endl;
+              cout << endl;
 
               /*
               if (recv_crc != recv_compbuf.GetCrc()) {
@@ -1512,6 +1559,7 @@ int main(int argc, char* argv[]) {
                 // counter
                 for (int i=0; i<4; i++) {
                   if (recv_uncbuf[k].txt.counter_cmd_id[i] != previous_recv_uncbuf[k].txt.counter_cmd_id[i]) {
+                    cout << "counter C" << i+1 << " reset" << endl;
                     std::static_pointer_cast<ft::Counter>(txt_conf[k].counter[i])->reset();
                     uncbuf[k].txt.counter_cmd_id[i] = recv_uncbuf[k].txt.counter_cmd_id[i];
                     txt_conf[k].counter_cmd_id[i] = uncbuf[k].txt.counter_cmd_id[i];
@@ -1562,7 +1610,7 @@ int main(int argc, char* argv[]) {
             /////////////////////////////
             // prepare send buffer
             /////////////////////////////            
-            std::memset(uncbuf, 0, sizeof uncbuf);
+            std::memset(uncbuf, 0, sizeof(uncbuf));
             { int k = 0;
               for (int i=0; i<8; i++) {
                   if (txt_conf[k].input_mode[i] != 0) {  // digital input
@@ -1641,27 +1689,27 @@ int main(int argc, char* argv[]) {
             */
             if (TransferDataChanged || FirstTransferAfterStop) {
               FirstTransferAfterStop = false;
-              //cout << "sent exch_data: ";
+              cout << "send exch_data: ";
               send_compbuf.Reset();
               for (int k=0; k<num_txts; k++) {
-                // cout << "sizeof(TxtSendDataCompressed) = " << std::dec << sizeof(TxtSendDataCompressed) << endl;
+                //cout << "sizeof(TxtSendDataCompressed) = " << std::dec << sizeof(TxtSendDataCompressed) << endl;
                 for (int i=0; i<sizeof(TxtSendDataCompressed)/2; i++) {
                   if (uncbuf[k].raw[i] == previous_uncbuf[k].raw[i]) {
                     //send_compbuf.AddWord(0, uncbuf[k].raw[i]);
                     send_compbuf.AddWord(0, previous_uncbuf[k].raw[i]);
-                    //cout << std::hex << 0 << " ";
+                    cout << std::hex << 0 << " ";
                   } else {
                       if (uncbuf[k].raw[i] == 0) {
                         send_compbuf.AddWord(1, 0);
-                        //cout << std::hex << 1 << " ";
+                        cout << std::hex << 1 << " ";
                       } else {
                         send_compbuf.AddWord(uncbuf[k].raw[i], uncbuf[k].raw[i]);
-                        //cout << std::hex << uncbuf[k].raw[i] << " ";
+                        cout << std::hex << uncbuf[k].raw[i] << " ";
                       }
                     }  
                 }
               }
-              //cout << endl;
+              cout << endl;
               send_compbuf.Finish();
               memcpy(previous_uncbuf, uncbuf, sizeof(TxtSendDataCompressedBuf)*num_txts);
               crc = send_compbuf.GetCrc();
@@ -1673,9 +1721,9 @@ int main(int argc, char* argv[]) {
               //cout << "sent exchdata: "; for (int i=0; i<m_extrasize; i++) cout << std::hex << (int)send_body[i] << " "; cout << endl;
             } else {
               crc = previous_crc;
-              send_body =  send_compbuf.cmpbuf0;
-              m_extrasize = 2;
-              //cout << "sent exch_data: " << std::hex << (int)send_compbuf.cmpbuf0[0] << " " << (int)send_compbuf.cmpbuf0[1] << endl;
+              send_body =  cmpbuf0;
+              m_extrasize = cmpbuf0size;
+              //cout << "sent exch_data: " << std::hex << (int)cmpbuf0[0] << " " << (int)cmpbuf0[1] << endl;
               //cout << "sent same, was: "; for (int k=0; k<num_txts; k++) for (int i=0; i<sizeof(TxtSendDataCompressed)/2; i++) cout << std::hex << (int)previous_uncbuf[k].raw[i] << " "; cout << endl;
             }
 
@@ -1683,7 +1731,7 @@ int main(int argc, char* argv[]) {
               m_resp_id, 
               m_extrasize,              // ,2 extra buffer size
               crc,                      // 0x0bbf0714, crc32 of extra buffer
-              1,                        // number of active extensions
+              (1 << (num_txts-1))-1,    // bitmask of active extensions
               0);                       // dummy align
 
             std::array<char, 1024> sendbuf;
