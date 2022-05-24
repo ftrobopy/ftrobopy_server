@@ -891,6 +891,9 @@ int main(int argc, char* argv[]) {
   kn::socket<(kn::protocol)0> sock;
  
   ft::TXT txt("auto");
+  ft::TXT ext1(txt_, 1);
+  ft::TXT atxt[2] = {txt_, ext1};
+  cout << "EXT1 initialized" << endl;
 
   main_is_running = true;
 
