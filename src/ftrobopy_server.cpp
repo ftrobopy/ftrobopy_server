@@ -1558,7 +1558,7 @@ int main(int argc, char* argv[]) {
                   if (recv_uncbuf[k].txt.counter_cmd_id[i] != previous_recv_uncbuf[k].txt.counter_cmd_id[i]) {
                     cout << "counter C" << i+1 << " reset" << endl;
                     std::static_pointer_cast<ft::Counter>(txt_conf[k].counter[i])->reset();
-                    uncbuf[k].txt.counter_cmd_id[i] = recv_uncbuf[k].txt.counter_cmd_id[i];
+                    uncbuf[k].txt.counter_cmd_id[i] = recv_uncbuf[k].txt.counter_cmd_id[i]; 
                     txt_conf[k].counter_cmd_id[i] = uncbuf[k].txt.counter_cmd_id[i];
                   }
                 }
@@ -1628,7 +1628,8 @@ int main(int argc, char* argv[]) {
                   } else { // analog input
                     switch (txt_conf[k].input_type[i]) {
                       case 0:
-                        uncbuf[k].txt.input[i] = std::static_pointer_cast<ft::Voltmeter>(txt_conf[k].in[i])->getVoltage(); // ft::Voltmeter
+                        // Communication aborted when sending a zero Voltage. Quick & Dirty: added Offset 10
+                        uncbuf[k].txt.input[i] = std::static_pointer_cast<ft::Voltmeter>(txt_conf[k].in[i])->getVoltage() + 10; // ft::Voltmeter
                         //cout << "Input I" << i << " is Voltmeter (analog) = " << uncbuf[k].txt.input[i] << endl;
                         break;
                       case 1:
@@ -1647,6 +1648,14 @@ int main(int argc, char* argv[]) {
                   }
 
                 if (uncbuf[k].txt.input[i] != previous_uncbuf[k].txt.input[i]) {
+                  TransferDataChanged = true;
+                }
+              }
+              // added because the uncbuf[].txt.counter_cmd_id was cleared above while preparing buffer 
+              // the counter-cmd-id was not sent back to RoboPro
+              for (int i=0; i<4; i++) {   
+                uncbuf[k].txt.counter_cmd_id[i] = txt_conf[k].counter_cmd_id[i];
+                if (uncbuf[k].txt.counter_cmd_id[i] != previous_uncbuf[k].txt.counter_cmd_id[i]) {
                   TransferDataChanged = true;
                 }
               }
@@ -1686,7 +1695,7 @@ int main(int argc, char* argv[]) {
             */
             if (TransferDataChanged || FirstTransferAfterStop) {
               FirstTransferAfterStop = false;
-              cout << "send exch_data: ";
+              //cout << "send exch_data: ";
               send_compbuf.Reset();
               for (int k=0; k<num_txts; k++) {
                 //cout << "sizeof(TxtSendDataCompressed) = " << std::dec << sizeof(TxtSendDataCompressed) << endl;
@@ -1694,19 +1703,19 @@ int main(int argc, char* argv[]) {
                   if (uncbuf[k].raw[i] == previous_uncbuf[k].raw[i]) {
                     //send_compbuf.AddWord(0, uncbuf[k].raw[i]);
                     send_compbuf.AddWord(0, previous_uncbuf[k].raw[i]);
-                    cout << std::hex << 0 << " ";
+                    //cout << std::hex << 0 << " ";
                   } else {
                       if (uncbuf[k].raw[i] == 0) {
                         send_compbuf.AddWord(1, 0);
-                        cout << std::hex << 1 << " ";
+                        //cout << std::hex << 1 << " ";
                       } else {
                         send_compbuf.AddWord(uncbuf[k].raw[i], uncbuf[k].raw[i]);
-                        cout << std::hex << uncbuf[k].raw[i] << " ";
+                        //cout << std::hex << uncbuf[k].raw[i] << " ";
                       }
                     }  
                 }
               }
-              cout << endl;
+              //cout << endl;
               send_compbuf.Finish();
               memcpy(previous_uncbuf, uncbuf, sizeof(TxtSendDataCompressedBuf)*num_txts);
               crc = send_compbuf.GetCrc();
