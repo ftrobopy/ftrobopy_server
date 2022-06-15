@@ -1526,8 +1526,8 @@ int main(int argc, char* argv[]) {
                       int speed = recv_uncbuf[k].txt.pwm[2*i] - (recv_uncbuf[k].txt.pwm[2*i+1]);
                       std::static_pointer_cast<ft::Encoder>(txt_conf[k].out[2*i])->startSpeed(speed);     // ft::Encoder(txt,i+1)
                     } else {
-                      std::static_pointer_cast<ft::Lamp>(txt_conf[k].out[2*i])->setBrightness(recv_uncbuf[k].txt.pwm[i]);
-                      std::static_pointer_cast<ft::Lamp>(txt_conf[k].out[2*i+1])->setBrightness(recv_uncbuf[k].txt.pwm[i]);
+                      std::static_pointer_cast<ft::Lamp>(txt_conf[k].out[2*i])->setBrightness(recv_uncbuf[k].txt.pwm[2*i]);     // .pwm[i] -> .pwm[2*i]
+                      std::static_pointer_cast<ft::Lamp>(txt_conf[k].out[2*i+1])->setBrightness(recv_uncbuf[k].txt.pwm[2*i+1]); // .pwm[i] -> .pwm[2*i+1]
                     }
                   }
                 }
