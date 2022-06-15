@@ -60,18 +60,18 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.9.7"
+#define VERSION "0.9.8"
 
 /*
 __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.9.7"
+__version__     = "0.9.8"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "beta"
-__date__        = "05/18/2022"
+__date__        = "06/15/2022"
 */
 
 namespace kn = kissnet;
