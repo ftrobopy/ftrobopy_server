@@ -67,11 +67,11 @@ __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.9.8"
+__version__     = "0.9.9"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "beta"
-__date__        = "06/15/2022"
+__date__        = "06/22/2022"
 */
 
 namespace kn = kissnet;
@@ -697,7 +697,11 @@ void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) 
   kn::buffer<1024> cambuf;
   cout << "camera thread started" << endl;
   camsock=camsocket->accept();
-  camsock.set_non_blocking(true);
+  try {
+    camsock.set_non_blocking(true);
+  }catch (const std::exception& e) {
+   cout << "cannot set camsock socket to non blocking ... continuing with blocking communication." << endl;
+  }
   sleep_for(1000ms);
 
   Camera cam(width, height, framerate);
@@ -1388,7 +1392,7 @@ int main(int argc, char* argv[]) {
                       txt_conf[0].out[i*2] = std::make_unique<ft::Lamp>(txt, i*2+1 );
                       txt_conf[0].out[i*2+1] = std::make_unique<ft::Lamp>(txt, i*2+1+1);
                       std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[i*2])->setBrightness(simple_recvbuf.txt.pwm[2*i]);
-                      std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[i*2+1])->setBrightness(simple_recvbuf.txt.pwm[2*i]);
+                      std::static_pointer_cast<ft::Lamp>(txt_conf[0].out[i*2+1])->setBrightness(simple_recvbuf.txt.pwm[2*i+1]);
                     }
                   }
                 }
