@@ -1488,7 +1488,7 @@ int main(int argc, char* argv[]) {
               memcpy(previous_recv_uncbuf, recv_uncbuf, sizeof(TxtRecvDataCompressedBuf)*num_txts);              
               recv_compbuf.Reset();
               recv_compbuf.SetBuffer((uint8_t*)(recvbuf.data())+16,1024-16);
-              cout << "received      : ";
+              //cout << "received      : ";
               for (int k=0; k<num_txts; k++) {
                 for (int i=0; i<(sizeof(TxtRecvData)-1)/2; i++) {
                   int w = recv_compbuf.GetWord();
@@ -1499,10 +1499,10 @@ int main(int argc, char* argv[]) {
                     else
                       if (w==1 && z==0) recv_uncbuf[k].raw[i]=1;
                       else recv_uncbuf[k].raw[i]=w;
-                  cout << std::hex << recv_uncbuf[k].raw[i] << " " << std::flush; 
+                  //cout << std::hex << recv_uncbuf[k].raw[i] << " " << std::flush; 
                 } 
               }  
-              cout << endl;
+              //cout << endl;
 
               /*
               if (recv_crc != recv_compbuf.GetCrc()) {
@@ -1588,7 +1588,7 @@ int main(int argc, char* argv[]) {
                             startDistance(recv_uncbuf[0].txt.motor_dist[i], 0x0f);
                   }
                 } else {
-                  cout << "unsynch all 4 motors" << endl;
+                  //cout << "unsynch all 4 motors" << endl;
                   for (int i=0; i<4; i++) {
                     if (recv_uncbuf[0].txt.motor_sync[i] == 0) {
                       std::static_pointer_cast<ft::Encoder>(txt_conf[0].out[2*i])->
