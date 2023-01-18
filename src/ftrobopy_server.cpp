@@ -63,14 +63,14 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.9.11"
+#define VERSION "0.9.12"
 
 /*
 __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022,2023 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.9.11"
+__version__     = "0.9.12"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "beta"
@@ -771,6 +771,7 @@ void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) 
 //
 // I2C functions taken from linux kernel, because smbus.h does not exist on TXT 4.0
 //
+/*
 __s32 i2c_smbus_access(int file, char read_write, __u8 command,
 		       int size, union i2c_smbus_data *data)
 {
@@ -808,10 +809,11 @@ __s32 i2c_smbus_write_byte_data(int file, __u8 command, __u8 value)
 	return i2c_smbus_access(file, I2C_SMBUS_WRITE, command,
 				I2C_SMBUS_BYTE_DATA, &data);
 }
+*/
 
 void startI2C(kn::tcp_socket* i2c_socket) {
-  cout << "I2C: thread started" << endl;
-  cout << "I2C: socket opened ... waiting for connection on port 65002" << endl;
+  //cout << "I2C: thread started" << endl;
+  //cout << "I2C: socket opened ... waiting for connection on port 65002" << endl;
   { // i2csock block
     kn::buffer<1024> recvbuf;
     auto i2csock = i2c_socket->accept();
@@ -823,8 +825,10 @@ void startI2C(kn::tcp_socket* i2c_socket) {
     m_id = 0;
     previous_m_id = 0;
 
-    cout << "I2C: connection established ... (i2c functionality not yet implemented)" << endl;
+    //cout << "I2C: connection established ... (i2c functionality not yet implemented)" << endl;
     while (i2c_is_online) {
+      sleep_for(50ms);
+/*      
       auto [size, valid] = i2csock.recv(recvbuf);
       if (!valid) {
         cout << "I2C: data received over socket is invalid" << endl;
@@ -866,6 +870,7 @@ void startI2C(kn::tcp_socket* i2c_socket) {
 
       }
       sleep_for(5ms);
+*/
     }
   } // i2csock destructor is called
   //cout << "I2C thread finished." << endl;
