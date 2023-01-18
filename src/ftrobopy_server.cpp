@@ -34,9 +34,12 @@ SOFTWARE.
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <linux/types.h>
+#include <linux/i2c.h>
+#include <linux/i2c-dev.h>
+
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/ioctl.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -60,18 +63,18 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.9.8"
+#define VERSION "0.9.11"
 
 /*
 __author__      = "Torsten Stuehn"
-__copyright__   = "Copyright 2022 by Torsten Stuehn"
+__copyright__   = "Copyright 2022,2023 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.9.9"
+__version__     = "0.9.11"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "beta"
-__date__        = "06/22/2022"
+__date__        = "01/18/2023"
 */
 
 namespace kn = kissnet;
@@ -765,14 +768,104 @@ void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) 
   sleep_for(20ms); // Camera destructor is called here
 }
 
+//
+// I2C functions taken from linux kernel, because smbus.h does not exist on TXT 4.0
+//
+__s32 i2c_smbus_access(int file, char read_write, __u8 command,
+		       int size, union i2c_smbus_data *data)
+{
+	struct i2c_smbus_ioctl_data args;
+	__s32 err;
+
+	args.read_write = read_write;
+	args.command = command;
+	args.size = size;
+	args.data = data;
+
+	err = ioctl(file, I2C_SMBUS, &args);
+	if (err == -1)
+		err = -errno;
+	return err;
+}
+
+__s32 i2c_smbus_read_byte_data(int file, __u8 command)
+{
+	union i2c_smbus_data data;
+	int err;
+
+	err = i2c_smbus_access(file, I2C_SMBUS_READ, command,
+			       I2C_SMBUS_BYTE_DATA, &data);
+	if (err < 0)
+		return err;
+
+	return 0x0FF & data.byte;
+}
+
+__s32 i2c_smbus_write_byte_data(int file, __u8 command, __u8 value)
+{
+	union i2c_smbus_data data;
+	data.byte = value;
+	return i2c_smbus_access(file, I2C_SMBUS_WRITE, command,
+				I2C_SMBUS_BYTE_DATA, &data);
+}
+
 void startI2C(kn::tcp_socket* i2c_socket) {
-  //cout << "I2C thread started" << endl;
-  //cout << "I2C socket opened ... waiting for connection on port 65002" << endl;
+  cout << "I2C: thread started" << endl;
+  cout << "I2C: socket opened ... waiting for connection on port 65002" << endl;
   { // i2csock block
+    kn::buffer<1024> recvbuf;
     auto i2csock = i2c_socket->accept();
-    // cout << "I2C connection established ... (i2c functionality not yet implemented)" << endl;
+
+    unsigned m_id;
+    unsigned m_command;
+    unsigned previous_m_id;
+    unsigned m_resp_id;
+    m_id = 0;
+    previous_m_id = 0;
+
+    cout << "I2C: connection established ... (i2c functionality not yet implemented)" << endl;
     while (i2c_is_online) {
-      sleep_for(50ms);
+      auto [size, valid] = i2csock.recv(recvbuf);
+      if (!valid) {
+        cout << "I2C: data received over socket is invalid" << endl;
+      }
+      cout << "I2C: " << std::dec << size << " bytes received: ";
+      for (int k=0; k<size; k++) {
+        cout << std::hex << (int)recvbuf[k] << " ";
+      }
+      cout << endl;
+      m_id = (uint8_t)recvbuf[0] | (uint8_t)recvbuf[1] << 8 | (uint8_t)recvbuf[2] << 16 | (uint8_t)recvbuf[3] << 24;
+      m_command = (uint8_t)recvbuf[4];
+
+      if (m_id != 0xB9DB3B39) { // invalid i2c command id
+        cout << "I2C: received invalid i2c command" << endl;
+      }
+
+      switch (m_command) {
+        case 0xB9DB3B39: { // i2c data exchange
+          cout << "I2C: got data exchange" << endl;
+          m_resp_id = 0x87FD0D90;
+
+          break;
+        }
+        default: { // unknown
+          cout << "I2C: unknown command or command not supported" << endl;
+          cout << "I2C: m_id=" << std::hex << m_id << endl;
+          cout << "I2C" << std::dec << size << " bytes received: ";
+          for (int k=0; k<size; k++) {
+            cout << std::hex << (int)recvbuf[k] << " ";
+          }
+          cout << endl;     
+          m_resp_id = 0x01020304;
+          auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
+          cout << "I2C:  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
+          i2csock.send(sendbuf, sendbuf.size());
+          connected = false;
+          break;
+        }
+
+      }
+      sleep_for(5ms);
     }
   } // i2csock destructor is called
   //cout << "I2C thread finished." << endl;
@@ -1156,7 +1249,7 @@ int main(int argc, char* argv[]) {
                 txt_conf[txt_nr].input_mode[i] = (uint8_t)recvbuf[16+i*4+1];
                 //cout << "Txt[" << txt_nr << "]Configuration Input[" << i << "].type=" << (int)txt_conf[txt_nr].input_type[i] << " , Input[" << i << "].mode=" << (int)txt_conf[txt_nr].input_mode[i] << endl;
                 if (txt_conf[txt_nr].input_type[i] != txt_conf[txt_nr].previous_input_type[i] ||
-                    txt_conf[txt_nr].input_mode[i] != txt_conf[txt_nr].input_mode[i]) {
+                    txt_conf[txt_nr].input_mode[i] != txt_conf[txt_nr].previous_input_mode[i]) {
 
                   txt_conf[txt_nr].in[i].reset(); // reset shared_ptr and call destructor of InputDevice;
                   needsUpdateConfig = true;
