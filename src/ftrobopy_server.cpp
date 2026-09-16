@@ -1,7 +1,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2022 by Torsten Stuehn
+Copyright (c) 2022-2025 by Torsten Stuehn
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -44,9 +44,9 @@ SOFTWARE.
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <netdb.h>
-#include <unistd.h>
+//#include <unistd.h>
 #include <errno.h>
-#include <fcntl.h>
+//#include <fcntl.h>
 
 #include <iostream>
 #include <sstream>
@@ -63,18 +63,18 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.9.12"
+#define VERSION "0.9.20"
 
 /*
 __author__      = "Torsten Stuehn"
-__copyright__   = "Copyright 2022,2023 by Torsten Stuehn"
+__copyright__   = "Copyright 2022-2026 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.9.12"
+__version__     = "0.9.20"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "beta"
-__date__        = "01/18/2023"
+__date__        = "09/16/2026"
 */
 
 namespace kn = kissnet;
@@ -97,7 +97,7 @@ const unsigned m_version = 0x4070000;   // ROBOPro-Version 4.7.0
 #define N_CAPTURE_BUFS 1
 
 // some of the fischertechnik servos don't reach 0 or 512
-// therefore we constrain the values here
+// therefore the values are limited here
 #define MIN_PWM_CYCL 30
 #define MAX_PWM_CYCL 490
 
@@ -532,7 +532,7 @@ void CompBuffer::AddWord(uint16_t word, uint16_t word_for_crc) {
   } else {
     EncodeNoChangeCount();
     if(word == 1 && m_previous_words[m_word_count]==0 || word == 0 && m_previous_words[m_word_count]!=0) {
-      // 10 Toggle (0 to 1, everything else to 0
+      // 10 Toggle (0 to 1, everything else to 0)
       PushBits(2,2);
     } else {
       // 11 16 bit follow immediately
@@ -768,25 +768,95 @@ void camThread(kn::tcp_socket* camsocket, int width, int height, int framerate) 
   sleep_for(20ms); // Camera destructor is called here
 }
 
+
 //
-// I2C functions taken from linux kernel, because smbus.h does not exist on TXT 4.0
+// Use linux/i2c.h and linux/i2c-dev.h because smbus.h does not exist on TXT 4.0
 //
-/*
+
 __s32 i2c_smbus_access(int file, char read_write, __u8 command,
-		       int size, union i2c_smbus_data *data)
+  int size, union i2c_smbus_data *data)
 {
-	struct i2c_smbus_ioctl_data args;
-	__s32 err;
+struct i2c_smbus_ioctl_data args;
+__s32 err;
 
-	args.read_write = read_write;
-	args.command = command;
-	args.size = size;
-	args.data = data;
+args.read_write = read_write;
+args.command = command;
+args.size = size;
+args.data = data;
 
-	err = ioctl(file, I2C_SMBUS, &args);
-	if (err == -1)
-		err = -errno;
-	return err;
+err = ioctl(file, I2C_SMBUS, &args);
+if (err == -1)
+err = -errno;
+return err;
+}
+
+uint8_t i2c_read_byte(int file, __u8 reg, int len, uint8_t *data)
+          {
+            //uint8_t reg = RAW_ANGLE_REG;
+            //uint8_t data[2] = {0, 0};
+
+            // Combined write + read transaction
+            i2c_msg messages[2];
+
+            messages[0].addr = 0x18;
+            messages[0].flags = 0;
+            messages[0].len = 1;
+            messages[0].buf = &reg;
+
+            messages[1].addr = 0x18;
+            messages[1].flags = I2C_M_RD;
+            messages[1].len = len;
+            messages[1].buf = data;
+
+            i2c_rdwr_ioctl_data transaction;
+            transaction.msgs = messages;
+            transaction.nmsgs = 2;
+
+            return ioctl(file, I2C_RDWR, &transaction);
+          }
+
+uint8_t i2c_write_byte(int file, __u8 reg, int len, uint8_t *data)
+          {
+            //uint8_t reg = RAW_ANGLE_REG;
+            //uint8_t data[2] = {0, 0};
+
+            // Combined write + read transaction
+            i2c_msg messages[2];
+
+            messages[0].addr = 0x18;
+            messages[0].flags = 0;
+            messages[0].len = 1;
+            messages[0].buf = &reg;
+
+            messages[1].addr = 0x18;
+            messages[1].flags = 0; //I2C_M_RD;
+            messages[1].len = len;
+            messages[1].buf = data;
+
+            i2c_rdwr_ioctl_data transaction;
+            transaction.msgs = messages;
+            transaction.nmsgs = 2;
+
+            return ioctl(file, I2C_RDWR, &transaction);
+          }
+
+/*
+int i2c_access(int file, char rw, char reg,
+  int size, union i2c_smbus_data *data)
+{
+struct i2c_smbus_ioctl_data args
+;
+int err;
+
+args.read_write = rw;
+args.command = reg;
+args.size = size;
+args.data = data;
+
+err = ioctl(file, I2C_SMBUS, &args);
+if (err == -1)
+err = -errno;
+return err;
 }
 
 __s32 i2c_smbus_read_byte_data(int file, __u8 command)
@@ -808,72 +878,179 @@ __s32 i2c_smbus_write_byte_data(int file, __u8 command, __u8 value)
 	data.byte = value;
 	return i2c_smbus_access(file, I2C_SMBUS_WRITE, command,
 				I2C_SMBUS_BYTE_DATA, &data);
-}
+}  
 */
+
 
 void startI2C(kn::tcp_socket* i2c_socket) {
-  //cout << "I2C: thread started" << endl;
-  //cout << "I2C: socket opened ... waiting for connection on port 65002" << endl;
+  cout << "I2C: thread started" << endl;
+  cout << "I2C: socket opened ... waiting for connection on port 65002" << endl;
   { // i2csock block
     kn::buffer<1024> recvbuf;
-    auto i2csock = i2c_socket->accept();
-
-    unsigned m_id;
-    unsigned m_command;
+    
+    unsigned m_id = 0;
     unsigned previous_m_id;
     unsigned m_resp_id;
-    m_id = 0;
-    previous_m_id = 0;
+    unsigned dev;
+    unsigned reg_len;
+    uint16_t data_len;
+    uint16_t reg;
+    uint8_t m_command;
+    uint8_t value;
 
-    //cout << "I2C: connection established ... (i2c functionality not yet implemented)" << endl;
-    while (i2c_is_online) {
-      sleep_for(50ms);
-/*      
-      auto [size, valid] = i2csock.recv(recvbuf);
-      if (!valid) {
-        cout << "I2C: data received over socket is invalid" << endl;
-      }
-      cout << "I2C: " << std::dec << size << " bytes received: ";
-      for (int k=0; k<size; k++) {
-        cout << std::hex << (int)recvbuf[k] << " ";
-      }
-      cout << endl;
-      m_id = (uint8_t)recvbuf[0] | (uint8_t)recvbuf[1] << 8 | (uint8_t)recvbuf[2] << 16 | (uint8_t)recvbuf[3] << 24;
-      m_command = (uint8_t)recvbuf[4];
+    int i2cfd = -1;
+    //union i2c_smbus_data i2cdata;
+    uint8_t i2cdata[1024];
 
-      if (m_id != 0xB9DB3B39) { // invalid i2c command id
-        cout << "I2C: received invalid i2c command" << endl;
-      }
+    // WARNING: the I2C port 65002 on the TXT uses BigEndian in contrast to 
+    //          the main communication port 65000 where LittleEndian is used !
 
-      switch (m_command) {
-        case 0xB9DB3B39: { // i2c data exchange
-          cout << "I2C: got data exchange" << endl;
-          m_resp_id = 0x87FD0D90;
-
-          break;
-        }
-        default: { // unknown
-          cout << "I2C: unknown command or command not supported" << endl;
-          cout << "I2C: m_id=" << std::hex << m_id << endl;
-          cout << "I2C" << std::dec << size << " bytes received: ";
-          for (int k=0; k<size; k++) {
-            cout << std::hex << (int)recvbuf[k] << " ";
-          }
-          cout << endl;     
-          m_resp_id = 0x01020304;
-          auto sendbuf = pystruct::pack(PY_STRING("<I"), m_resp_id);
-          cout << "I2C:  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
-          i2csock.send(sendbuf, sendbuf.size());
-          connected = false;
-          break;
-        }
-
-      }
-      sleep_for(5ms);
-*/
+    i2cfd = open("/dev/i2c-3", O_RDWR);
+    if (i2cfd < 0) {
+      cout << "I2C Error: failed to open /dev/i2c-3" << endl;
     }
+
+    cout << "I2C: opened device /dev/i2c-3" << endl;
+
+    while (i2c_is_online) {
+      // sleep_for(50ms);
+      auto i2csock = i2c_socket->accept();
+
+      while (i2c_is_online) {
+        auto [size, valid] = i2csock.recv(recvbuf);
+        if (size == 0 || !valid) {
+          break;
+        }
+
+        //cout << "I2C: connection established" << endl;
+
+        cout << "I2C: " << std::dec << size << " bytes read: ";
+        for (int k=0; k<size; k++) {
+          cout << std::hex << (int)recvbuf[k] << " ";
+        }
+        cout << endl;
+        m_id = (uint8_t)recvbuf[0] << 24| (uint8_t)recvbuf[1] << 16 | (uint8_t)recvbuf[2] << 8 | (uint8_t)recvbuf[3];
+        m_command = (uint8_t)recvbuf[4];
+
+        // cout << "got m_id " << std::hex << m_id << endl; 
+
+        if (m_id != 0xB9DB3B39) { // invalid i2c command id
+          //cout << "I2C: received invalid i2c m_id: " << m_id << endl;
+        } else { // valid i2c command id
+          // cout << "I2C: got data exchange m_id" << endl;
+          std::array<char, 1024> sendbuf;
+          int sendbuf_len = 0;
+          switch (m_command) {
+            case 0x01: { // i2c read
+              dev = (uint8_t)recvbuf[5] << 24 | (uint8_t)recvbuf[6] << 16 | (uint8_t)recvbuf[7] << 8 | (uint8_t)recvbuf[8];
+              reg_len = (uint8_t)recvbuf[9] << 24 | (uint8_t)recvbuf[10] << 16 | (uint8_t)recvbuf[11] << 8 | (uint8_t)recvbuf[12];
+              data_len = (uint8_t)recvbuf[13] << 8 | (uint8_t)recvbuf[14];
+              reg = (uint8_t)recvbuf[15] << 8 | (uint8_t)recvbuf[16];
+              //cout << "I2C: read(dev:" << std::hex << (int)dev << " ";
+              // cout << "reg_len:" << std::hex << (int)reg_len << " ";
+              //cout << "data_len:" << std::hex << (int)data_len << " ";
+              //cout << "reg:" << std::hex << (int)reg << ")" << endl;
+              if (ioctl(i2cfd, I2C_SLAVE, dev) < 0) {
+                cout << "I2C Error: failed to connect to device address " << std::hex << dev << endl;
+                continue;
+              }
+              //if (i2c_smbus_access(i2cfd, I2C_SMBUS_READ, reg, data_len, &i2cdata) < 0) {
+              //  cout << "I2C Error: failed to read register" << endl; 
+              //  continue;
+              //}
+              if (i2c_read_byte(i2cfd, reg, data_len, i2cdata) < 0) {
+                cout << "I2C Error: failed to read register" << endl; 
+                close(i2cfd);
+                continue;
+              }
+              //
+              //cout << "I2C smbus_access READ: ";
+              //for (int i=0; i<data_len; i++) {
+              //  cout << std::hex << (int)i2cdata.block[i] << " ";
+              //}
+              //cout << endl;
+              //m_resp_id = 0x87FD0D90;
+              m_resp_id = 0x900DFD87;
+              // data_len is 1:
+              auto sendbuf_head = pystruct::pack(PY_STRING("<IIHH"), m_resp_id, data_len, 0x0001, data_len );
+              for (int i = 0; i < sizeof(sendbuf_head); i++) {
+                sendbuf[i] = sendbuf_head[i];
+              }
+              sendbuf_len = sizeof(sendbuf_head);
+              for (int i = 0; i < data_len; i++) {
+                sendbuf[sizeof(sendbuf_head) + i] = i2cdata[i]; // i2cdata.block[i];
+              }
+              sendbuf_len += data_len;
+              break;
+            }
+            case 0x02: { // i2c write
+              dev = (uint8_t)recvbuf[5] << 24 | (uint8_t)recvbuf[6] << 16 | (uint8_t)recvbuf[7] << 8 | (uint8_t)recvbuf[8];
+              reg_len = (uint8_t)recvbuf[9] << 24 | (uint8_t)recvbuf[10] << 16 | (uint8_t)recvbuf[11] << 8 | (uint8_t)recvbuf[12];
+              // dummy = (uint8_t)recvbuf[9] << 24 | (uint8_t)recvbuf[10] << 16 | (uint8_t)recvbuf[11] << 8 | (uint8_t)recvbuf[12];
+              //       = should always be 0x00000002
+              reg = (uint8_t)recvbuf[13] << 24 | (uint8_t)recvbuf[14] << 16 | (uint8_t)recvbuf[15] << 8 | (uint8_t)recvbuf[16];
+              value = (uint8_t)recvbuf[17];
+              m_resp_id = 0x900DFD87;
+              //cout << "I2C: write(dev:" << std::hex << (int)dev << " ";
+              //cout << "reg:" << std::hex << (int)reg << " ";
+              //cout << "value:" << std::hex << (int)value << ")" << endl;
+              i2cdata[0] = value;
+              if (ioctl(i2cfd, I2C_SLAVE, dev) < 0) {
+                cout << "I2C Error: failed to connect to device address " << std::hex << dev << endl;
+                continue;
+              }
+
+              int err = i2c_write_byte(i2cfd, reg, reg_len, i2cdata);
+              if (err < 0) {
+                cout << "I2C Error: failed to write register" << endl; 
+                close(i2cfd);
+                continue;
+              }   
+              //auto sendbuf_head = pystruct::pack(PY_STRING("<III"), m_resp_id, 0, 0);
+              auto sendbuf_head = pystruct::pack(PY_STRING("<III"), m_resp_id, 0, 0x1);
+              for (int i = 0; i < sizeof(sendbuf_head); i++) {
+                sendbuf[i] = sendbuf_head[i];
+              }
+              sendbuf_len = sizeof(sendbuf_head);
+              break;
+            }
+            default: { // unknown
+              cout << "I2C: unknown m_command or command not supported" << endl;
+              cout << "I2C: m_command=" << std::hex << m_command << endl;
+              cout << "I2C" << std::dec << size << " bytes received: ";
+              for (int k=0; k<size; k++) {
+                cout << std::hex << (int)recvbuf[k] << " ";
+              }
+              cout << endl;     
+              m_resp_id = 0x900DFD87;
+              auto sendbuf_head = pystruct::pack(PY_STRING("<III"), m_resp_id, 0, 0);
+              for (int i = 0; i < sizeof(sendbuf_head); i++) {
+                sendbuf[i] = sendbuf_head[i];
+              }
+              sendbuf_len = sizeof(sendbuf_head);
+              break;
+            }
+          }
+          //cout << "I2C: send bytes: " << std::dec << sendbuf_len << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl;
+          cout << "I2C: sending bytes: ";
+          for (int k=0; k<sendbuf_len; k++) {
+            cout << std::hex << (int)sendbuf[k] << " ";
+          }
+          cout << endl;
+          i2csock.send(sendbuf, sendbuf_len);
+        } // valid i2c command id
+        sleep_for(5ms);
+      }
+    }
+
+    // close ""/dev/i2c-3"
+    if (i2cfd >= 0) {
+      close(i2cfd);
+      i2cfd = -1;
+    }
+
   } // i2csock destructor is called
-  //cout << "I2C thread finished." << endl;
+  cout << "I2C thread finished." << endl;
   sleep_for(20ms);
 };
 
@@ -885,7 +1062,7 @@ template<typename T> struct TD;
 
 int main(int argc, char* argv[]) {
   cout << "ftrobopy and ROBOPro Online Server, version " << ftrobopy_server_version 
-       << ", (c) 2022 by Torsten Stuehn" << endl;
+       << ", (c) 2022-2025 by Torsten Stuehn" << endl;
 
   TxtConfiguration txt_conf[MAXNUMTXTS] = {};
 
@@ -960,22 +1137,22 @@ int main(int argc, char* argv[]) {
   try {
     listen_socket.bind();
   } catch (const std::exception& e) {
-    cout << "main socket (port 65000) is still in TIME_WAIT - please wait 2 minutes and try again." << endl;
-    std::exit(1);
+      cout << "main socket (port 65000) is still in TIME_WAIT - please wait 2 minutes and try again." << endl;
+      std::exit(1);
   }
    
   try {
     i2c_socket.bind();
   } catch (const std::exception& e) {
       cout << "i2c socket (port 65002) is still in TIME_WAIT - please wait 2 minutes and try again." << endl;
-  std::exit(1);
+      std::exit(1);
   }
 
   try {
     camsocket.bind();
   } catch (const std::exception& e) {
       cout << "camera socket (port 65001) is still in TIME_WAIT - please wait 2 minutes and try again." << endl;
-    std::exit(1);
+      std::exit(1);
   }
  
   listen_socket.listen();
@@ -1109,6 +1286,7 @@ int main(int argc, char* argv[]) {
     { // open block for sock 
 
     sock = listen_socket.accept();
+    // cout << "while main_is_running" << endl;
 
     m_id = 0;
     previous_m_id = 0;
@@ -1926,8 +2104,8 @@ int main(int argc, char* argv[]) {
   listen_socket.shutdown();
   i2c_socket.shutdown();
   camsocket.shutdown();
-  sleep_for(100ms);
+  sleep_for(500ms);
  } // end of block containing open sockets
  cout << "ftrobopy_server closed." << endl;
- sleep_for(100ms);
+ sleep_for(500ms);
 } // main
