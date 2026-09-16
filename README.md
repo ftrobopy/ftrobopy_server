@@ -11,11 +11,11 @@ Currently supported functions are:
 - online camera streaming (ftrobopy and ROBOPro)
 - servo-output support (via O1-O3 of first Extension, initialize ftrobopy with extension support "use_extension=True" to get this feature)
 - extended synchronization support for 4 motors in ROBOPro and ftrobopy
+- I2C online support (beta)
 
 The program is written in C/C++ (std=c++17) and can be compiled with the preinstalled gcc-compiler on the TXT 4.0.
 
 Future plans:
-- I2C support
 - BT-Remote control support (this needs some intrusion on the root level of the TXT 4.0 firmware)
 - support to use (old) TXT controllers as Extensions for a (Master)-TXT 4.0 via WiFi network
 
