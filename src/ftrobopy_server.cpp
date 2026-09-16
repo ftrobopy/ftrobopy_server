@@ -1,7 +1,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2022-2025 by Torsten Stuehn
+Copyright (c) 2022-2026 by Torsten Stuehn
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -1062,7 +1062,7 @@ template<typename T> struct TD;
 
 int main(int argc, char* argv[]) {
   cout << "ftrobopy and ROBOPro Online Server, version " << ftrobopy_server_version 
-       << ", (c) 2022-2025 by Torsten Stuehn" << endl;
+       << ", (c) 2022-2026 by Torsten Stuehn" << endl;
 
   TxtConfiguration txt_conf[MAXNUMTXTS] = {};
 
