@@ -70,11 +70,11 @@ __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022-2026 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.9.20"
+__version__     = "0.9.21"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "beta"
-__date__        = "09/16/2026"
+__date__        = "09/21/2026"
 */
 
 namespace kn = kissnet;
@@ -790,7 +790,8 @@ err = -errno;
 return err;
 }
 
-uint8_t i2c_read_byte(int file, __u8 reg, int len, uint8_t *data)
+//uint8_t i2c_read_byte(int file, __u8 reg, int len, uint8_t *data)
+int i2c_read_byte(int file, __u8 dev, __u8 reg, uint16_t len, uint8_t *data)
           {
             //uint8_t reg = RAW_ANGLE_REG;
             //uint8_t data[2] = {0, 0};
@@ -798,12 +799,12 @@ uint8_t i2c_read_byte(int file, __u8 reg, int len, uint8_t *data)
             // Combined write + read transaction
             i2c_msg messages[2];
 
-            messages[0].addr = 0x18;
+            messages[0].addr = dev;
             messages[0].flags = 0;
             messages[0].len = 1;
             messages[0].buf = &reg;
 
-            messages[1].addr = 0x18;
+            messages[1].addr = dev;
             messages[1].flags = I2C_M_RD;
             messages[1].len = len;
             messages[1].buf = data;
@@ -815,7 +816,7 @@ uint8_t i2c_read_byte(int file, __u8 reg, int len, uint8_t *data)
             return ioctl(file, I2C_RDWR, &transaction);
           }
 
-uint8_t i2c_write_byte(int file, __u8 reg, int len, uint8_t *data)
+int i2c_write_byte(int file, __u8 dev, __u8 reg, uint16_t len, uint8_t *data)
           {
             //uint8_t reg = RAW_ANGLE_REG;
             //uint8_t data[2] = {0, 0};
@@ -823,12 +824,12 @@ uint8_t i2c_write_byte(int file, __u8 reg, int len, uint8_t *data)
             // Combined write + read transaction
             i2c_msg messages[2];
 
-            messages[0].addr = 0x18;
+            messages[0].addr = dev;
             messages[0].flags = 0;
             messages[0].len = 1;
             messages[0].buf = &reg;
 
-            messages[1].addr = 0x18;
+            messages[1].addr = dev;
             messages[1].flags = 0; //I2C_M_RD;
             messages[1].len = len;
             messages[1].buf = data;
@@ -891,10 +892,10 @@ void startI2C(kn::tcp_socket* i2c_socket) {
     unsigned m_id = 0;
     unsigned previous_m_id;
     unsigned m_resp_id;
-    unsigned dev;
-    unsigned reg_len;
+    uint16_t reg_len;
     uint16_t data_len;
-    uint16_t reg;
+    uint8_t dev;
+    uint8_t reg;
     uint8_t m_command;
     uint8_t value;
 
@@ -942,10 +943,12 @@ void startI2C(kn::tcp_socket* i2c_socket) {
           int sendbuf_len = 0;
           switch (m_command) {
             case 0x01: { // i2c read
-              dev = (uint8_t)recvbuf[5] << 24 | (uint8_t)recvbuf[6] << 16 | (uint8_t)recvbuf[7] << 8 | (uint8_t)recvbuf[8];
+              //dev = (uint8_t)recvbuf[5] << 24 | (uint8_t)recvbuf[6] << 16 | (uint8_t)recvbuf[7] << 8 | (uint8_t)recvbuf[8];
+              dev = (uint8_t)recvbuf[8];
               reg_len = (uint8_t)recvbuf[9] << 24 | (uint8_t)recvbuf[10] << 16 | (uint8_t)recvbuf[11] << 8 | (uint8_t)recvbuf[12];
               data_len = (uint8_t)recvbuf[13] << 8 | (uint8_t)recvbuf[14];
-              reg = (uint8_t)recvbuf[15] << 8 | (uint8_t)recvbuf[16];
+              //reg = (uint8_t)recvbuf[15] << 8 | (uint8_t)recvbuf[16];
+              reg = (uint8_t)recvbuf[16];
               //cout << "I2C: read(dev:" << std::hex << (int)dev << " ";
               // cout << "reg_len:" << std::hex << (int)reg_len << " ";
               //cout << "data_len:" << std::hex << (int)data_len << " ";
@@ -958,7 +961,7 @@ void startI2C(kn::tcp_socket* i2c_socket) {
               //  cout << "I2C Error: failed to read register" << endl; 
               //  continue;
               //}
-              if (i2c_read_byte(i2cfd, reg, data_len, i2cdata) < 0) {
+              if (i2c_read_byte(i2cfd, dev, reg, data_len, i2cdata) < 0) {
                 cout << "I2C Error: failed to read register" << endl; 
                 close(i2cfd);
                 continue;
@@ -984,11 +987,11 @@ void startI2C(kn::tcp_socket* i2c_socket) {
               break;
             }
             case 0x02: { // i2c write
-              dev = (uint8_t)recvbuf[5] << 24 | (uint8_t)recvbuf[6] << 16 | (uint8_t)recvbuf[7] << 8 | (uint8_t)recvbuf[8];
+              dev = (uint8_t)recvbuf[8];
               reg_len = (uint8_t)recvbuf[9] << 24 | (uint8_t)recvbuf[10] << 16 | (uint8_t)recvbuf[11] << 8 | (uint8_t)recvbuf[12];
               // dummy = (uint8_t)recvbuf[9] << 24 | (uint8_t)recvbuf[10] << 16 | (uint8_t)recvbuf[11] << 8 | (uint8_t)recvbuf[12];
               //       = should always be 0x00000002
-              reg = (uint8_t)recvbuf[13] << 24 | (uint8_t)recvbuf[14] << 16 | (uint8_t)recvbuf[15] << 8 | (uint8_t)recvbuf[16];
+              reg = (uint8_t)recvbuf[16];
               value = (uint8_t)recvbuf[17];
               m_resp_id = 0x900DFD87;
               //cout << "I2C: write(dev:" << std::hex << (int)dev << " ";
@@ -1000,7 +1003,7 @@ void startI2C(kn::tcp_socket* i2c_socket) {
                 continue;
               }
 
-              int err = i2c_write_byte(i2cfd, reg, reg_len, i2cdata);
+              int err = i2c_write_byte(i2cfd, dev, reg, reg_len, i2cdata);
               if (err < 0) {
                 cout << "I2C Error: failed to write register" << endl; 
                 close(i2cfd);
