@@ -63,18 +63,18 @@ SOFTWARE.
 #include "kissnet.hpp"
 #include "cppystruct.h"
 
-#define VERSION "0.9.20"
+#define VERSION "0.9.22"
 
 /*
 __author__      = "Torsten Stuehn"
 __copyright__   = "Copyright 2022-2026 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "0.9.21"
+__version__     = "0.9.22"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
 __status__      = "beta"
-__date__        = "09/21/2026"
+__date__        = "09/25/2026"
 */
 
 namespace kn = kissnet;
@@ -841,51 +841,9 @@ int i2c_write_byte(int file, __u8 dev, __u8 reg, uint16_t len, uint8_t *data)
             return ioctl(file, I2C_RDWR, &transaction);
           }
 
-/*
-int i2c_access(int file, char rw, char reg,
-  int size, union i2c_smbus_data *data)
-{
-struct i2c_smbus_ioctl_data args
-;
-int err;
-
-args.read_write = rw;
-args.command = reg;
-args.size = size;
-args.data = data;
-
-err = ioctl(file, I2C_SMBUS, &args);
-if (err == -1)
-err = -errno;
-return err;
-}
-
-__s32 i2c_smbus_read_byte_data(int file, __u8 command)
-{
-	union i2c_smbus_data data;
-	int err;
-
-	err = i2c_smbus_access(file, I2C_SMBUS_READ, command,
-			       I2C_SMBUS_BYTE_DATA, &data);
-	if (err < 0)
-		return err;
-
-	return 0x0FF & data.byte;
-}
-
-__s32 i2c_smbus_write_byte_data(int file, __u8 command, __u8 value)
-{
-	union i2c_smbus_data data;
-	data.byte = value;
-	return i2c_smbus_access(file, I2C_SMBUS_WRITE, command,
-				I2C_SMBUS_BYTE_DATA, &data);
-}  
-*/
-
-
 void startI2C(kn::tcp_socket* i2c_socket) {
-  cout << "I2C: thread started" << endl;
-  cout << "I2C: socket opened ... waiting for connection on port 65002" << endl;
+  //cout << "I2C: thread started" << endl;
+  //cout << "I2C: socket opened ... waiting for connection on port 65002" << endl;
   { // i2csock block
     kn::buffer<1024> recvbuf;
     
@@ -900,7 +858,6 @@ void startI2C(kn::tcp_socket* i2c_socket) {
     uint8_t value;
 
     int i2cfd = -1;
-    //union i2c_smbus_data i2cdata;
     uint8_t i2cdata[1024];
 
     // WARNING: the I2C port 65002 on the TXT uses BigEndian in contrast to 
@@ -911,7 +868,7 @@ void startI2C(kn::tcp_socket* i2c_socket) {
       cout << "I2C Error: failed to open /dev/i2c-3" << endl;
     }
 
-    cout << "I2C: opened device /dev/i2c-3" << endl;
+    //cout << "I2C: opened device /dev/i2c-3" << endl;
 
     while (i2c_is_online) {
       // sleep_for(50ms);
@@ -923,13 +880,16 @@ void startI2C(kn::tcp_socket* i2c_socket) {
           break;
         }
 
-        //cout << "I2C: connection established" << endl;
+        /*
+        cout << "I2C: connection established" << endl;
 
         cout << "I2C: " << std::dec << size << " bytes read: ";
         for (int k=0; k<size; k++) {
           cout << std::hex << (int)recvbuf[k] << " ";
         }
         cout << endl;
+        */
+
         m_id = (uint8_t)recvbuf[0] << 24| (uint8_t)recvbuf[1] << 16 | (uint8_t)recvbuf[2] << 8 | (uint8_t)recvbuf[3];
         m_command = (uint8_t)recvbuf[4];
 
@@ -966,13 +926,15 @@ void startI2C(kn::tcp_socket* i2c_socket) {
                 close(i2cfd);
                 continue;
               }
-              //
+
+              /*
               //cout << "I2C smbus_access READ: ";
               //for (int i=0; i<data_len; i++) {
               //  cout << std::hex << (int)i2cdata.block[i] << " ";
               //}
               //cout << endl;
-              //m_resp_id = 0x87FD0D90;
+              */
+
               m_resp_id = 0x900DFD87;
               // data_len is 1:
               auto sendbuf_head = pystruct::pack(PY_STRING("<IIHH"), m_resp_id, data_len, 0x0001, data_len );
@@ -1034,12 +996,17 @@ void startI2C(kn::tcp_socket* i2c_socket) {
               break;
             }
           }
+
           //cout << "I2C: send bytes: " << std::dec << sendbuf_len << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl;
+
+          /*
           cout << "I2C: sending bytes: ";
           for (int k=0; k<sendbuf_len; k++) {
             cout << std::hex << (int)sendbuf[k] << " ";
           }
           cout << endl;
+          */
+
           i2csock.send(sendbuf, sendbuf_len);
         } // valid i2c command id
         sleep_for(5ms);
@@ -1053,7 +1020,7 @@ void startI2C(kn::tcp_socket* i2c_socket) {
     }
 
   } // i2csock destructor is called
-  cout << "I2C thread finished." << endl;
+  //cout << "I2C thread finished." << endl;
   sleep_for(20ms);
 };
 
@@ -1323,7 +1290,7 @@ int main(int argc, char* argv[]) {
         m_id = (uint8_t)recvbuf[0] | (uint8_t)recvbuf[1] << 8 | (uint8_t)recvbuf[2] << 16 | (uint8_t)recvbuf[3] << 24;
         switch (m_id) {
           case 0xDC21219A: { // query status
-            cout << "got: query status" << endl;
+            //cout << "got: query status" << endl;
             m_resp_id = 0xBAC9723E;
             auto sendbuf = pystruct::pack(PY_STRING("<I16sI"), m_resp_id, m_devicename, m_version);
             //cout << "  --> sending back " << std::dec << sendbuf.size() << " bytes, m_resp_id=0x" << std::hex << m_resp_id << endl << endl;
